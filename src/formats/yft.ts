@@ -125,5 +125,9 @@ function identityMatrix(): number[] {
  * the order Three.js expects for the transposed, column-major transform.
  */
 function d3dMatrix(r: ResourceReader, ptr: number): number[] {
-  return Array.from({ length: 16 }, (_, i) => r.f32(ptr + i * 4));
+  const matrix = Array.from({ length: 16 }, (_, i) => r.f32(ptr + i * 4));
+  // Frag physics transforms store translation in the fourth row but leave
+  // the homogeneous term unset. Three.js requires an affine matrix here.
+  matrix[15] = 1;
+  return matrix;
 }
