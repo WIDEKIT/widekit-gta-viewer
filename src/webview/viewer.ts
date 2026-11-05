@@ -97,7 +97,6 @@ export class Viewer {
   }
 
   setGridVisible(v: boolean): void {
-    if (document.body.dataset.widekitStudio === 'true') return;
     this.grid.visible = v;
     this.axes.visible = v;
     this.requestRender();
