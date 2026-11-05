@@ -305,22 +305,30 @@ export class ModelPanel {
       const slot = wheelSlot(child.boneTag);
       if (slot) slots.set(slot, child);
     }
-    const frontSource = slots.get('lf')?.drawable ?? slots.get('rf')?.drawable;
-    const rearSource = slots.get('lr')?.drawable ?? slots.get('rr')?.drawable;
-    for (const [slot, child] of slots) {
-      const rawDrawable = child.drawable ?? (slot === 'lf' || slot === 'rf' || !rearSource ? frontSource : rearSource);
-      const drawable = rawDrawable && rawDrawable.shaders.length === 0
-        ? { ...rawDrawable, shaders: vehicle.shaders, textures: vehicle.textures, hasExternalTextures: vehicle.hasExternalTextures }
-        : rawDrawable;
-      if (!drawable) continue;
-      const lod = availableLod(drawable, 'high');
-      const wheel = buildDrawable(drawable, lod, this.store, this.opts);
+    // This vehicle provides a single detailed wheel drawable (LF); the other
+    // three physics children only provide placement transforms. Build it once
+    // and clone it, so every slot gets the exact same geometry/material set.
+    const source = slots.get('lf')?.drawable ?? slots.get('rf')?.drawable
+      ?? slots.get('lr')?.drawable ?? slots.get('rr')?.drawable;
+    if (!source) return;
+    const drawable = source.shaders.length === 0
+      ? { ...source, shaders: vehicle.shaders, textures: vehicle.textures, hasExternalTextures: vehicle.hasExternalTextures }
+      : source;
+    const template = buildDrawable(drawable, availableLod(drawable, 'high'), this.store, this.opts);
+    template.traverse((node) => {
+      if ((node as THREE.Mesh).isMesh) (node as THREE.Mesh).frustumCulled = false;
+    });
+
+    for (const slot of ['lf', 'rf', 'lr', 'rr'] as const) {
+      const child = slots.get(slot);
+      if (!child) continue;
+      const wheel = slot === 'lf' ? template : template.clone(true);
       wheel.name = `wheel_${slot}`;
       wheel.matrixAutoUpdate = false;
-      // The wheel mesh itself is local to its physics child.  Reuse the one
-      // authored mesh, but retain every child's own transform for exact wheel
-      // placement (front/rear and left/right).
+      // The mesh is local to the source wheel. Each physics child supplies
+      // the exact world placement for its own corner of the vehicle.
       wheel.matrix.fromArray(fragmentMatrix(child.transform));
+      wheel.matrixWorldNeedsUpdate = true;
       root.add(wheel);
     }
   }
