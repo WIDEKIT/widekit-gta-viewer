@@ -175,6 +175,48 @@ export class ModelPanel {
     this.viewer.requestRender();
   }
 
+  /** Read-only controls exposed to the WideKit showroom sidebar. */
+  setPreviewOption(option: string, value: unknown): void {
+    const enabled = Boolean(value);
+    switch (option) {
+      case 'textures':
+        this.opts.textures = enabled;
+        this.store.showTextures = enabled;
+        this.store.refresh();
+        break;
+      case 'wireframe':
+        this.opts.wireframe = enabled;
+        applyRenderOptions(this.viewer.content, this.opts);
+        break;
+      case 'vertexColors':
+        this.opts.vertexColors = enabled;
+        this.show(false);
+        break;
+      case 'doubleSided':
+        this.opts.doubleSided = enabled;
+        applyRenderOptions(this.viewer.content, this.opts);
+        break;
+      case 'grid':
+        this.viewer.setGridVisible(enabled);
+        break;
+      case 'bounds':
+        if (this.bounds) this.bounds.visible = enabled;
+        break;
+      case 'collision':
+        if (this.collision) this.collision.visible = enabled;
+        break;
+      case 'cut': {
+        const d = this.drawable;
+        const progress = Math.max(0, Math.min(1, Number(value)));
+        this.viewer.setCutHeight(!d || progress >= 1 ? null : d.bbMin[2] + (d.bbMax[2] - d.bbMin[2]) * progress);
+        break;
+      }
+      default:
+        return;
+    }
+    this.viewer.requestRender();
+  }
+
   dispose(): void {
     this.offStore();
     this.livery.dispose();
