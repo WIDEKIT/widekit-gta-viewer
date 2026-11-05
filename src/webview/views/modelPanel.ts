@@ -307,15 +307,20 @@ export class ModelPanel {
     }
     const frontSource = slots.get('lf')?.drawable ?? slots.get('rf')?.drawable;
     const rearSource = slots.get('lr')?.drawable ?? slots.get('rr')?.drawable;
+    const frontSourceSlot: WheelSlot | undefined = slots.get('lf')?.drawable ? 'lf' : (slots.get('rf')?.drawable ? 'rf' : undefined);
+    const rearSourceSlot: WheelSlot | undefined = slots.get('lr')?.drawable ? 'lr' : (slots.get('rr')?.drawable ? 'rr' : frontSourceSlot);
     const bonePosition = (slot: WheelSlot): THREE.Vector3 | undefined => {
       const child = slots.get(slot);
       const bone = child && vehicle.bones.find((candidate) => candidate.tag === child.boneTag);
       return bone ? new THREE.Vector3(bone.world[12], bone.world[13], bone.world[14]) : undefined;
     };
-    const frontOrigin = bonePosition(slots.has('lf') ? 'lf' : 'rf');
-    const rearOrigin = bonePosition(slots.has('lr') ? 'lr' : 'rr');
     for (const [slot, child] of slots) {
-      const drawable = child.drawable ?? (slot === 'lf' || slot === 'rf' ? frontSource : (rearSource ?? frontSource));
+      const useFrontSource = slot === 'lf' || slot === 'rf' || !rearSource;
+      const sourceSlot = child.drawable ? slot : (useFrontSource ? frontSourceSlot : rearSourceSlot);
+      const rawDrawable = child.drawable ?? (useFrontSource ? frontSource : rearSource);
+      const drawable = rawDrawable && rawDrawable.shaders.length === 0
+        ? { ...rawDrawable, shaders: vehicle.shaders, textures: vehicle.textures, hasExternalTextures: vehicle.hasExternalTextures }
+        : rawDrawable;
       if (!drawable) continue;
       const lod = availableLod(drawable, 'high');
       const wheel = buildDrawable(drawable, lod, this.store, this.opts);
@@ -325,10 +330,10 @@ export class ModelPanel {
       // physics transform is for the simulation body, not the render mesh.
       // Place a source wheel from the vehicle skeleton instead; this keeps the
       // original left wheel intact and produces exact mirrored/rear copies.
-      const sourcePosition = slot === 'lf' || slot === 'rf' ? frontOrigin : (rearOrigin ?? frontOrigin);
+      const sourcePosition = sourceSlot ? bonePosition(sourceSlot) : undefined;
       const targetPosition = bonePosition(slot);
       wheel.matrix.fromArray(sourcePosition && targetPosition
-        ? wheelMatrix(sourcePosition, targetPosition, slot)
+        ? wheelMatrix(sourcePosition, targetPosition, sourceSlot!, slot)
         : identityMatrix());
       root.add(wheel);
     }
@@ -510,13 +515,15 @@ function identityMatrix(): number[] {
   return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 }
 
-function wheelMatrix(source: THREE.Vector3, target: THREE.Vector3, slot: WheelSlot): number[] {
-  const right = slot === 'rf' || slot === 'rr';
+function wheelMatrix(source: THREE.Vector3, target: THREE.Vector3, sourceSlot: WheelSlot, targetSlot: WheelSlot): number[] {
+  const sourceRight = sourceSlot === 'rf' || sourceSlot === 'rr';
+  const targetRight = targetSlot === 'rf' || targetSlot === 'rr';
+  const mirrorX = sourceRight !== targetRight;
   return [
-    right ? -1 : 1, 0, 0, 0,
+    mirrorX ? -1 : 1, 0, 0, 0,
     0, 1, 0, 0,
     0, 0, 1, 0,
-    right ? target.x + source.x : target.x - source.x,
+    mirrorX ? target.x + source.x : target.x - source.x,
     target.y - source.y,
     target.z - source.z,
     1,
