@@ -16,10 +16,8 @@ export class Viewer {
   readonly overlay = new THREE.Group();
   /** Bright neutral studio for browser vehicle previews. */
   private readonly studio = new THREE.Group();
-  private readonly studioFloor: THREE.Mesh;
-  private readonly studioBack: THREE.Mesh;
-  private readonly studioLeft: THREE.Mesh;
-  private readonly studioRight: THREE.Mesh;
+  /** Single inward-facing room, so there are no gaps or incorrectly rotated walls. */
+  private readonly studioRoom: THREE.Mesh;
   private readonly grid: THREE.GridHelper;
   private readonly axes: THREE.AxesHelper;
   private readonly resizeObserver: ResizeObserver;
@@ -46,6 +44,7 @@ export class Viewer {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.15;
     this.controls.screenSpacePanning = true;
+    this.controls.enablePan = false;
     this.controls.addEventListener('change', () => this.requestRender());
     this.controls.addEventListener('start', () => (this.userMoved = true));
 
@@ -56,13 +55,9 @@ export class Viewer {
     const head = new THREE.DirectionalLight(0xffffff, 1.2);
     head.position.set(0, 0, 1);
     this.camera.add(head);
-    const studioMaterial = new THREE.MeshStandardMaterial({ color: 0xe8edf2, metalness: 0.58, roughness: 0.22, side: THREE.DoubleSide });
-    const wallMaterial = new THREE.MeshStandardMaterial({ color: 0xd5dce5, metalness: 0.42, roughness: 0.3, side: THREE.DoubleSide });
-    this.studioFloor = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), studioMaterial);
-    this.studioBack = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), wallMaterial);
-    this.studioLeft = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), wallMaterial.clone());
-    this.studioRight = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), wallMaterial.clone());
-    this.studio.add(this.studioFloor, this.studioBack, this.studioLeft, this.studioRight);
+    const studioMaterial = new THREE.MeshStandardMaterial({ color: 0xe7edf5, metalness: 0.46, roughness: 0.26, side: THREE.BackSide });
+    this.studioRoom = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), studioMaterial);
+    this.studio.add(this.studioRoom);
     this.studio.visible = document.body.dataset.widekitStudio === 'true';
     this.scene.add(hemi, sun, this.camera, this.studio, this.content, this.overlay);
 
@@ -157,6 +152,11 @@ export class Viewer {
     this.camera.far = dist * 100 + radius * 10;
     this.camera.updateProjectionMatrix();
     this.controls.target.copy(center);
+    if (this.studio.visible && !box) {
+      // The camera may orbit freely, but cannot zoom far enough to leave the room.
+      this.controls.minDistance = Math.max(radius * 0.5, 0.15);
+      this.controls.maxDistance = Math.max(Math.max(size.x, size.y, size.z) * 1.9, dist * 1.12);
+    }
     this.controls.update();
     this.framed = true;
 
@@ -175,17 +175,9 @@ export class Viewer {
     const center = box.getCenter(new THREE.Vector3());
     const size = extent * 5;
     const floorZ = box.min.z - Math.max(extent * 0.025, 0.015);
-    this.studioFloor.position.set(center.x, center.y, floorZ);
-    this.studioFloor.scale.set(size, size, 1);
-    this.studioBack.position.set(center.x, center.y + size * 0.28, floorZ + size * 0.34);
-    this.studioBack.rotation.set(Math.PI / 2, 0, 0);
-    this.studioBack.scale.set(size, size * 0.68, 1);
-    this.studioLeft.position.set(center.x - size * 0.35, center.y, floorZ + size * 0.34);
-    this.studioLeft.rotation.set(Math.PI / 2, 0, Math.PI / 2);
-    this.studioLeft.scale.set(size, size * 0.68, 1);
-    this.studioRight.position.set(center.x + size * 0.35, center.y, floorZ + size * 0.34);
-    this.studioRight.rotation.set(Math.PI / 2, 0, Math.PI / 2);
-    this.studioRight.scale.set(size, size * 0.68, 1);
+    const height = Math.max(size * 0.56, box.max.z - floorZ + extent * 1.1);
+    this.studioRoom.position.set(center.x, center.y, floorZ + height / 2);
+    this.studioRoom.scale.set(size, size, height);
   }
 
   /** Returns the first content object under the given client coordinates. */
