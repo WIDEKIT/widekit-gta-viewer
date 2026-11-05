@@ -1,0 +1,69 @@
+# Roadmap
+
+Ideas for making FiveM / GTA V modding workflows faster, roughly in priority order.
+
+## Done (0.13.0)
+
+Clothing packs: outfit preview, build-time texture optimisation and embedded replacements, groups and tags, duplicate
+inspector, configurable split size.
+
+## Done (0.12.0)
+
+### Clothing pack builder
+Project-based addon clothing for FiveM: add, order and configure drawables, check them, optimise textures and build
+the resource (in grzyClothTool's layout); import existing resources.
+
+## Done (0.11.0)
+
+### Cloth physics preview
+`.yld` cloth dictionaries: simulated mesh, pinned/free vertices, links and collision shapes over the clothing model.
+
+## Done (0.10.0)
+
+### Animation preview
+`.ycd` clip dictionaries play on a built-in ped skeleton (ped clips) or on the matching vehicle/prop model.
+
+## Done (0.9.0)
+
+### 1. Resource health check
+Scan a workspace (or folder) of FiveM resources and report problems in VS Code's **Problems** panel and a
+**Resource Health** view:
+
+- **Oversized assets** — streamed files whose system or graphics memory exceeds 16 MiB (FiveM warns about these
+  and they can fail to stream), with the biggest textures inside named.
+- **Missing textures** — shader textures that aren't embedded and aren't in any `.ytd` in the workspace.
+- **Broken references** — `.ytyp` archetypes with no model file; `.ymap` entities whose archetype isn't defined in
+  the workspace.
+- **Manifest gaps** — streamed `.ytyp` files without a matching `data_file 'DLC_ITYP_REQUEST'` entry in
+  `fxmanifest.lua`.
+- **Name clashes** — the same asset file name streamed by more than one resource.
+- **Escrow-encrypted files** and unreadable files.
+- **Texture hints** — missing mipmaps, uncompressed or very large textures (fixable with the optimiser).
+
+### 2. Batch texture optimiser
+Across a resource or the whole workspace: cap texture sizes (halving uses the existing mipmaps, so there's no
+quality loss), add missing mipmaps, and compress uncompressed textures to DXT1/DXT5. Shows candidates and
+estimated memory savings first, keeps `.bak` backups, and reports before/after sizes.
+
+### 3. Asset browser with "Find Usages"
+A **GTA V** sidebar listing every resource's models, texture dictionaries, archetypes, maps, collisions and ped
+files, expandable to their contents. **Find Usages** answers "which models use this texture?", "which maps place
+this archetype?", "where is this texture defined?". **Find Asset…** searches everything by name.
+
+## Later
+
+- **CodeWalker / Sollumz XML** export and import for round-tripping with other tools.
+- **Clothing packs, remaining** — alt:V and singleplayer DLC output; shrinking a model's streaming memory when its
+  embedded textures are optimised (needs a full model re-save); a skinned ped body for exact hair scale.
+- **Animations on ped models** — skin a ped's clothing `.ydd` to the animated skeleton instead of a stick figure;
+  facial animation; UV-scroll tracks.
+- **Cloth simulation** — run the cloth physics live (gravity, collisions) on the `.yld` preview.
+- **Full ped / vehicle assembly** — preview all components of a ped or vehicle together in one 3D view.
+- **Fragment physics** — per-part collision and breakable children in `.yft`.
+- **Gen9 (RSC8)** resources.
+- **PSO-format `.ymt`** files.
+
+## Not planned
+
+- **Zed support** — Zed extensions can't provide custom editors, webviews or UI panels, which every preview here
+  depends on.

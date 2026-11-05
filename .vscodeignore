@@ -1,0 +1,14 @@
+**
+!dist/extension.js
+!dist/extension.web.js
+!dist/webview.js
+!dist/webview.css
+!package.json
+!README.md
+!CHANGELOG.md
+!LICENSE
+!THIRD_PARTY_NOTICES.md
+!media/icon.png
+!media/sidebar.svg
+!media/reserved/reservedDrawable.ydd
+!media/reserved/reservedTexture.ytd

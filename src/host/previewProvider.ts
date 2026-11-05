@@ -1,0 +1,941 @@
+import * as vscode from 'vscode';
+import { parseYdd, parseYdr } from '../formats/drawable';
+import { joaat } from '../formats/hash';
+import { listYtdTextureNames, parseYtd, readYtdTextures } from '../formats/ytd';
+import { parseYtyp } from '../formats/ytyp';
+import { parseYmap } from '../formats/ymap';
+import { parseYbn } from '../formats/bounds';
+import { parseYft } from '../formats/yft';
+import { parseYmt } from '../formats/ymt';
+import { parseYcd } from '../formats/ycd';
+import { parseYld } from '../formats/yld';
+import { isPedAnimation } from '../formats/pedSkeleton';
+import { isEncrypted } from '../formats/scan';
+import { updateVariationLiveries } from '../formats/livery';
+import { editYtd, encodeImage, exportDds, NewTexture, readFullTexture, replaceTexture, TextureFileKind, textureNameProblem, YtdEdit } from '../formats/textureEdit';
+import type {
+  AnimTarget,
+  ArchetypeData,
+  ClipDictionaryData,
+  ArchetypeRequest,
+  DrawableData,
+  HostToWebview,
+  TextureData,
+  ViewKind,
+  WebviewToHost,
+} from '../shared/model';
+import { AssetFile, AssetIndex, basename, dirname, SearchScope } from './assetIndex';
+
+export const VIEW_TYPES: Record<ViewKind, string> = {
+  drawable: 'gtaPreview.ydr',
+  dictionary: 'gtaPreview.ydd',
+  fragment: 'gtaPreview.yft',
+  ytyp: 'gtaPreview.ytyp',
+  ytd: 'gtaPreview.ytd',
+  ymap: 'gtaPreview.ymap',
+  ybn: 'gtaPreview.ybn',
+  ymt: 'gtaPreview.ymt',
+  ycd: 'gtaPreview.ycd',
+  yld: 'gtaPreview.yld',
+};
+
+/** Meta formats that also exist as XML (CodeWalker/Sollumz exports, hand-edited files). */
+const META_KINDS: ViewKind[] = ['ytyp', 'ymap', 'ymt'];
+
+/** Texture names per .ytd, keyed by URI and invalidated by mtime. */
+const ytdNameCache = new Map<string, { mtime: number; size: number; names: Set<string> }>();
+/** Archetype definitions per .ytyp, keyed by URI and invalidated by mtime. */
+const ytypCache = new Map<string, { mtime: number; archetypes: ArchetypeData[] }>();
+
+/** Stops scanning after this many dictionaries per texture request. */
+const MAX_YTD_SCAN = 400;
+/** Archetype models are sent to the webview in batches of this size. */
+const ARCHETYPE_BATCH = 8;
+
+class PreviewDocument implements vscode.CustomDocument {
+  constructor(readonly uri: vscode.Uri) {}
+  dispose(): void {}
+}
+
+export class GtaPreviewProvider implements vscode.CustomReadonlyEditorProvider<PreviewDocument> {
+  static register(context: vscode.ExtensionContext): vscode.Disposable[] {
+    return (Object.keys(VIEW_TYPES) as ViewKind[]).map((kind) =>
+      vscode.window.registerCustomEditorProvider(VIEW_TYPES[kind], new GtaPreviewProvider(context, kind), {
+        webviewOptions: { retainContextWhenHidden: true },
+        supportsMultipleEditorsPerDocument: true,
+      })
+    );
+  }
+
+  constructor(private readonly context: vscode.ExtensionContext, private readonly kind: ViewKind) {}
+
+  openCustomDocument(uri: vscode.Uri): PreviewDocument {
+    return new PreviewDocument(uri);
+  }
+
+  resolveCustomEditor(document: PreviewDocument, panel: vscode.WebviewPanel): void {
+    const dist = vscode.Uri.joinPath(this.context.extensionUri, 'dist');
+    panel.webview.options = { enableScripts: true, localResourceRoots: [dist] };
+    panel.webview.html = this.html(panel.webview, dist);
+    const session = new PreviewSession(document.uri, this.kind, panel);
+    panel.onDidDispose(() => session.dispose());
+  }
+
+  private html(webview: vscode.Webview, dist: vscode.Uri): string {
+    return webviewHtml(webview, dist, this.kind);
+  }
+}
+
+/** The shared webview page; `kind` tells the page which view to show. */
+export function webviewHtml(webview: vscode.Webview, dist: vscode.Uri, kind: string): string {
+  const nonce = makeNonce();
+  const script = webview.asWebviewUri(vscode.Uri.joinPath(dist, 'webview.js'));
+  const style = webview.asWebviewUri(vscode.Uri.joinPath(dist, 'webview.css'));
+  const csp = [
+    "default-src 'none'",
+    `img-src ${webview.cspSource} data: blob:`,
+    `style-src ${webview.cspSource} 'unsafe-inline'`,
+    `script-src 'nonce-${nonce}'`,
+  ].join('; ');
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="${csp}">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="${style}">
+</head>
+<body data-kind="${kind}">
+<div id="app"></div>
+<script nonce="${nonce}" src="${script}"></script>
+</body>
+</html>`;
+}
+
+/** Handles one open preview: loads the file and answers webview requests. */
+class PreviewSession {
+  private readonly disposables: vscode.Disposable[] = [];
+  private readonly index: AssetIndex;
+  private readonly yddCache = new Map<string, Promise<DrawableData[]>>();
+  private archetypeIndexPromise?: Promise<Map<number, ArchetypeData>>;
+  private disposed = false;
+  /** Image files followed as livery sources. */
+  private readonly links = new Map<number, vscode.Disposable>();
+  private nextLinkId = 1;
+
+  constructor(private readonly uri: vscode.Uri, private readonly kind: ViewKind, private readonly panel: vscode.WebviewPanel) {
+    this.index = new AssetIndex(uri, config<SearchScope>('assetSearch', 'workspace'));
+    this.disposables.push(panel.webview.onDidReceiveMessage((m: WebviewToHost) => this.onMessage(m)));
+
+    // Live reload when the file is re-exported (e.g. from Sollumz or CodeWalker).
+    const watcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(dirname(uri), basename(uri))
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const reload = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => void this.load(), 300);
+    };
+    watcher.onDidChange(reload, undefined, this.disposables);
+    watcher.onDidCreate(reload, undefined, this.disposables);
+    this.disposables.push(watcher);
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.disposables.forEach((d) => d.dispose());
+    this.links.forEach((l) => l.dispose());
+  }
+
+  private post(message: HostToWebview): void {
+    if (!this.disposed) void this.panel.webview.postMessage(message);
+  }
+
+  private async onMessage(message: WebviewToHost): Promise<void> {
+    try {
+      switch (message.type) {
+        case 'ready':
+          await this.load();
+          break;
+        case 'findTextures':
+          await this.findTextures(message.requestId, message.names, message.hints, message.maxSize);
+          break;
+        case 'loadArchetypes':
+          await this.loadArchetypes(message.requestId, message.archetypes, message.maxTextureSize);
+          break;
+        case 'openAsset':
+          await this.openAsset(message.name, message.ext);
+          break;
+        case 'loadDrawableFile':
+          await this.loadDrawableFile(message.requestId, message.name, message.maxTextureSize);
+          break;
+        case 'loadTextureFile':
+          await this.loadTextureFile(message.requestId, message.name, message.maxSize);
+          break;
+        case 'pickImage':
+          await this.pickImage(message.requestId);
+          break;
+        case 'pickImages':
+          await this.pickImages(message.requestId);
+          break;
+        case 'editYtd':
+          await this.editYtd(message);
+          break;
+        case 'renameTexture':
+          await this.renameTexture(message.requestId, message.origin, message.name);
+          break;
+        case 'getFullTexture':
+          await this.getFullTexture(message.requestId, message.origin, message.name);
+          break;
+        case 'replaceTexture':
+          await this.replaceTexture(message);
+          break;
+        case 'exportDds':
+          await this.exportDds(message.requestId, message.origin, message.name);
+          break;
+        case 'saveFile':
+          await this.saveFile(message.requestId, message.suggestedName, message.data, message.filterName, message.extensions);
+          break;
+        case 'findLiveries':
+          await this.findLiveries(message.requestId, message.prefixes, message.maxSize);
+          break;
+        case 'liveryLink':
+          await this.liveryLink(message.requestId, message.suggestedName);
+          break;
+        case 'liveryExport':
+          await this.liveryExport(message.requestId, message.suggestedName, message.data);
+          break;
+        case 'liveryUnlink':
+          this.links.get(message.linkId)?.dispose();
+          this.links.delete(message.linkId);
+          break;
+        case 'liveryMeta':
+          await this.liveryMeta(message.requestId, message.change);
+          break;
+        case 'openAsText':
+          await vscode.commands.executeCommand('vscode.openWith', this.uri, 'default');
+          break;
+      }
+    } catch (err) {
+      this.post({ type: 'error', message: (err as Error).message });
+    }
+  }
+
+  private async load(): Promise<void> {
+    const file = basename(this.uri);
+    let data: Uint8Array;
+    try {
+      data = await vscode.workspace.fs.readFile(this.uri);
+    } catch (err) {
+      this.post({ type: 'error', message: `Could not read ${file}: ${(err as Error).message}` });
+      return;
+    }
+    const maxSize = config('maxTextureSize', 1024);
+    if (META_KINDS.includes(this.kind) && looksLikeXml(data)) {
+      this.post({
+        type: 'text',
+        file,
+        text: new TextDecoder().decode(data.subarray(0, 512 * 1024)),
+        note: 'This file is XML rather than a binary resource.',
+      });
+      return;
+    }
+    try {
+      switch (this.kind) {
+        case 'drawable':
+          this.post({ type: 'drawables', file, kind: 'drawable', drawables: withOrigin([parseYdr(data, { maxSize })], this.uri) });
+          break;
+        case 'dictionary':
+          this.post({ type: 'drawables', file, kind: 'dictionary', drawables: withOrigin(parseYdd(data, { maxSize }), this.uri) });
+          break;
+        case 'fragment':
+          this.post({ type: 'drawables', file, kind: 'fragment', drawables: withOrigin(parseYft(data, { maxSize }), this.uri) });
+          break;
+        case 'ytd':
+          this.post({ type: 'ytd', file, textures: tagOrigin(parseYtd(data, { maxSize }), this.uri) });
+          break;
+        case 'ytyp':
+          // File names nearby let us turn most name hashes back into names.
+          this.post({ type: 'ytyp', file, ytyp: parseYtyp(data, { knownNames: await this.knownNames() }) });
+          break;
+        case 'ymap':
+          this.post({ type: 'ymap', file, ymap: parseYmap(data, { knownNames: await this.knownNames() }) });
+          break;
+        case 'ybn':
+          this.post({ type: 'ybn', file, bounds: parseYbn(data) });
+          break;
+        case 'ycd': {
+          const ycd = parseYcd(data);
+          const { targets, notes } = await this.animationTargets(ycd);
+          this.post({ type: 'ycd', file, ycd, targets, targetNotes: notes });
+          break;
+        }
+        case 'yld':
+          this.post({ type: 'yld', file, yld: parseYld(data), ...(await this.clothModel()) });
+          break;
+        case 'ymt': {
+          // Ped variation files describe models/textures that sit next to them.
+          const dir = dirname(this.uri).path.toLowerCase() + '/';
+          const files = (await this.index.all())
+            .filter((f) => ['ydd', 'ydr', 'yft', 'ytd', 'yld'].includes(f.ext) && f.uri.path.toLowerCase().startsWith(dir))
+            .map((f) => `${f.base}.${f.ext}`);
+          this.post({ type: 'ymt', file, ymt: parseYmt(data, { knownNames: await this.knownNames() }), files });
+          break;
+        }
+      }
+    } catch (err) {
+      this.post({ type: 'error', message: (err as Error).message });
+    }
+  }
+
+  /**
+   * Models that non-ped animations in a clip dictionary can drive: the model
+   * named by a `va_<model>.ycd` file, then models in the same folder, kept when
+   * their skeleton contains the animated bones.
+   */
+  private async animationTargets(ycd: ClipDictionaryData): Promise<{ targets: AnimTarget[]; notes: string[] }> {
+    const wanted = ycd.animations
+      .map((a) => new Set(a.tracks.filter((t) => t.track <= 2 && t.boneId !== 0).map((t) => t.boneId)))
+      .filter((tags) => tags.size && !isPedAnimation(tags));
+    const targets: AnimTarget[] = [];
+    const notes: string[] = [];
+    if (!wanted.length) return { targets, notes };
+    const self = basename(this.uri).toLowerCase().replace(/\.ycd$/, '');
+    const named = self.startsWith('va_') ? self.slice(3) : self;
+    const dir = dirname(this.uri).path.toLowerCase() + '/';
+    const models = (await this.index.all()).filter((f) => ['ydr', 'yft', 'ydd'].includes(f.ext));
+    const candidates = [
+      ...models.filter((f) => f.base === named),
+      ...models.filter((f) => f.base !== named && f.uri.path.toLowerCase().startsWith(dir) && !/_hi$|\+hi$/.test(f.base)),
+    ].slice(0, 24);
+    const maxSize = Math.min(512, config('maxTextureSize', 1024));
+    const encrypted: string[] = [];
+    for (const f of candidates) {
+      try {
+        const data = await vscode.workspace.fs.readFile(f.uri);
+        if (isEncrypted(data)) {
+          encrypted.push(`${f.base}.${f.ext}`);
+          continue;
+        }
+        const drawables = f.ext === 'ydd' ? parseYdd(data, { maxSize }) : f.ext === 'yft' ? parseYft(data, { maxSize }) : [parseYdr(data, { maxSize })];
+        for (const d of withOrigin(drawables, f.uri)) {
+          const tags = new Set(d.bones.map((b) => b.tag));
+          if (wanted.some((w) => [...w].some((t) => tags.has(t)))) targets.push({ file: `${f.base}.${f.ext}`, drawable: d });
+        }
+      } catch {
+        // Unreadable models are simply not offered.
+      }
+      if (targets.length >= 8) break;
+    }
+    if (encrypted.length) {
+      const list = encrypted.length > 3 ? `${encrypted.slice(0, 3).join(', ')} and ${encrypted.length - 3} more` : encrypted.join(', ');
+      notes.push(`${list} ${encrypted.length === 1 ? 'is' : 'are'} escrow-encrypted, so ${encrypted.length === 1 ? 'its skeleton' : 'their skeletons'} can't be read.`);
+    }
+    return { targets, notes };
+  }
+
+  /**
+   * The clothing model a .yld belongs to: the .ydd with the same name, plus the
+   * first texture variation (`<name>^accs_000_u.yld` → `<name>^accs_diff_000_a_uni.ytd`).
+   */
+  private async clothModel(): Promise<Pick<Extract<HostToWebview, { type: 'yld' }>, 'model' | 'variation'>> {
+    const base = basename(this.uri).toLowerCase().replace(/\.yld$/, '');
+    const files = await this.index.all();
+    const dir = dirname(this.uri).path.toLowerCase();
+    const near = (f: AssetFile) => dirname(f.uri).path.toLowerCase() === dir;
+    const ydd = files.filter((f) => f.ext === 'ydd' && f.base === base).sort((a, b) => Number(near(b)) - Number(near(a)))[0];
+    if (!ydd) return {};
+    const maxSize = config('maxTextureSize', 1024);
+    let model: { file: string; drawables: DrawableData[] } | undefined;
+    try {
+      const data = await vscode.workspace.fs.readFile(ydd.uri);
+      if (!isEncrypted(data)) model = { file: `${ydd.base}.ydd`, drawables: withOrigin(parseYdd(data, { maxSize }), ydd.uri) };
+    } catch {
+      return {};
+    }
+    const m = /^(.*)_(\d{3})_[a-z]$/.exec(base);
+    const prefix = m ? `${m[1]}_diff_${m[2]}_` : undefined;
+    const ytd = prefix ? files.filter((f) => f.ext === 'ytd' && f.base.startsWith(prefix)).sort((a, b) => a.base.localeCompare(b.base))[0] : undefined;
+    let variation: TextureData | undefined;
+    if (ytd) {
+      try {
+        const data = await vscode.workspace.fs.readFile(ytd.uri);
+        variation = isEncrypted(data) ? undefined : tagOrigin(parseYtd(data, { maxSize }), ytd.uri)[0];
+      } catch {
+        // The model still shows without its variation texture.
+      }
+    }
+    return { model, variation };
+  }
+
+  /** Names of nearby files, used to resolve name hashes. */
+  private async knownNames(): Promise<string[]> {
+    return (await this.index.all()).map((f) => f.base);
+  }
+
+  /**
+   * Archetype definitions from every .ytyp in scope, keyed by name hash. Lets
+   * .ymap entities find their drawable dictionary and MLO interior layouts.
+   */
+  private async archetypeIndex(): Promise<Map<number, ArchetypeData>> {
+    this.archetypeIndexPromise ??= (async () => {
+      const index = new Map<number, ArchetypeData>();
+      const names = await this.knownNames();
+      for (const ytyp of await this.index.byExt('ytyp')) {
+        try {
+          const key = ytyp.uri.toString();
+          const stat = await vscode.workspace.fs.stat(ytyp.uri);
+          let entry = ytypCache.get(key);
+          if (!entry || entry.mtime !== stat.mtime) {
+            const parsed = parseYtyp(await vscode.workspace.fs.readFile(ytyp.uri), { knownNames: names });
+            entry = { mtime: stat.mtime, archetypes: parsed.archetypes };
+            ytypCache.set(key, entry);
+          }
+          for (const a of entry.archetypes) {
+            const hash = nameToHash(a.name);
+            if (!index.has(hash)) index.set(hash, a);
+          }
+        } catch {
+          // Skip unreadable .ytyp files.
+        }
+      }
+      return index;
+    })();
+    return this.archetypeIndexPromise;
+  }
+
+  /**
+   * Looks for textures that the model references but doesn't embed. Dictionaries
+   * named in `hints` are searched first, then every .ytd in scope, nearest first.
+   */
+  private async findTextures(requestId: number, names: string[], hints: string[], maxSize?: number): Promise<void> {
+    const wanted = new Set(names.map((n) => n.toLowerCase()));
+    const opts = { maxSize: Math.min(maxSize ?? Infinity, config('maxTextureSize', 1024)) };
+    const hintSet = new Set(hints.map((h) => h.toLowerCase()));
+    const hintHashes = new Set(hints.map((h) => joaat(h)));
+    const ytds = await this.index.byExt('ytd');
+    const ordered = [
+      ...ytds.filter((f) => hintSet.has(f.base) || hintHashes.has(f.hash)),
+      ...ytds.filter((f) => !(hintSet.has(f.base) || hintHashes.has(f.hash))),
+    ];
+
+    let searched = 0;
+    for (const ytd of ordered) {
+      if (wanted.size === 0 || searched >= MAX_YTD_SCAN || this.disposed) break;
+      searched++;
+      const found = await this.texturesFrom(ytd, wanted, opts);
+      if (found.length) {
+        for (const t of found) wanted.delete(t.name.toLowerCase());
+        this.post({ type: 'textures', requestId, textures: found, source: basename(ytd.uri), searched, done: false });
+      }
+    }
+    this.post({ type: 'textures', requestId, textures: [], source: '', searched, done: true });
+  }
+
+  private async texturesFrom(ytd: AssetFile, wanted: Set<string>, opts: { maxSize: number }): Promise<TextureData[]> {
+    try {
+      const names = await this.ytdNames(ytd);
+      const matches = new Set([...wanted].filter((n) => names?.has(n)));
+      if (!matches.size) return [];
+      return tagOrigin(readYtdTextures(await vscode.workspace.fs.readFile(ytd.uri), matches, opts), ytd.uri);
+    } catch {
+      return []; // Encrypted or malformed dictionaries are skipped.
+    }
+  }
+
+  /**
+   * Loads the models behind archetypes (from .ydr, or .ydd when a dictionary is
+   * set), along with their definitions from nearby .ytyp files.
+   */
+  private async loadArchetypes(requestId: number, requests: ArchetypeRequest[], maxTextureSize?: number): Promise<void> {
+    const opts = { maxSize: Math.min(maxTextureSize ?? Infinity, config('maxTextureSize', 1024)) };
+    const files = await this.index.all();
+    const defs = await this.archetypeIndex();
+    const find = (name: string, ext: string) => {
+      const hash = nameToHash(name);
+      return files.find((f) => f.ext === ext && f.hash === hash);
+    };
+
+    let models: Record<string, DrawableData | null> = {};
+    let archetypes: Record<string, ArchetypeData | null> = {};
+    let count = 0;
+    for (const req of requests) {
+      if (this.disposed) return;
+      const def = defs.get(nameToHash(req.name)) ?? null;
+      archetypes[req.name] = def;
+      const dictionary = req.dictionary || def?.drawableDictionary || undefined;
+      models[req.name] = def?.mlo ? null : await this.loadArchetype({ ...req, dictionary }, find, opts).catch(() => null);
+      if (++count % ARCHETYPE_BATCH === 0) {
+        this.post({ type: 'archetypeModels', requestId, models, archetypes, done: false });
+        models = {};
+        archetypes = {};
+      }
+    }
+    this.post({ type: 'archetypeModels', requestId, models, archetypes, done: true });
+  }
+
+  private async loadArchetype(
+    req: ArchetypeRequest,
+    find: (name: string, ext: string) => AssetFile | undefined,
+    opts: { maxSize: number }
+  ): Promise<DrawableData | null> {
+    if (req.dictionary) {
+      const ydd = find(req.dictionary, 'ydd');
+      if (ydd) {
+        const key = ydd.uri.toString();
+        if (!this.yddCache.has(key)) {
+          this.yddCache.set(key, Promise.resolve(vscode.workspace.fs.readFile(ydd.uri)).then((d) => parseYdd(d, opts)));
+        }
+        const hash = nameToHash(req.name);
+        const drawables = await this.yddCache.get(key)!;
+        const match = drawables.find((d) => d.nameHash === hash || joaat(d.name) === hash);
+        if (match) return withOrigin([match], ydd.uri)[0];
+      }
+    }
+    const ydr = find(req.name, 'ydr');
+    if (ydr) return withOrigin([parseYdr(await vscode.workspace.fs.readFile(ydr.uri), opts)], ydr.uri)[0];
+    // Fragments (vehicles, breakables): use the main drawable.
+    const yft = find(req.name, 'yft');
+    if (yft) return withOrigin(parseYft(await vscode.workspace.fs.readFile(yft.uri), opts), yft.uri)[0] ?? null;
+    return null;
+  }
+
+  /** Loads all drawables from a model file located by base name (e.g. a ped component .ydd). */
+  private async loadDrawableFile(requestId: number, name: string, maxTextureSize?: number): Promise<void> {
+    const opts = { maxSize: Math.min(maxTextureSize ?? Infinity, config('maxTextureSize', 1024)) };
+    const base = name.toLowerCase();
+    const candidates = (await this.index.all()).filter((f) => f.base === base && ['ydd', 'ydr', 'yft'].includes(f.ext));
+    const file = candidates.sort((a, b) => ['ydd', 'ydr', 'yft'].indexOf(a.ext) - ['ydd', 'ydr', 'yft'].indexOf(b.ext))[0];
+    if (!file) {
+      this.post({ type: 'drawableFile', requestId, drawables: [], error: `${name} was not found.` });
+      return;
+    }
+    try {
+      const data = await vscode.workspace.fs.readFile(file.uri);
+      const drawables = file.ext === 'ydd' ? parseYdd(data, opts) : file.ext === 'yft' ? parseYft(data, opts) : [parseYdr(data, opts)];
+      this.post({ type: 'drawableFile', requestId, drawables: withOrigin(drawables, file.uri) });
+    } catch (err) {
+      this.post({ type: 'drawableFile', requestId, drawables: [], error: (err as Error).message });
+    }
+  }
+
+  private async loadTextureFile(requestId: number, name: string, maxSize?: number): Promise<void> {
+    const opts = { maxSize: Math.min(maxSize ?? Infinity, config('maxTextureSize', 1024)) };
+    const base = name.toLowerCase();
+    const file = (await this.index.byExt('ytd')).find((f) => f.base === base);
+    if (!file) {
+      this.post({ type: 'textureFile', requestId, textures: [], error: `${name}.ytd was not found.` });
+      return;
+    }
+    try {
+      this.post({ type: 'textureFile', requestId, textures: tagOrigin(parseYtd(await vscode.workspace.fs.readFile(file.uri), opts), file.uri) });
+    } catch (err) {
+      this.post({ type: 'textureFile', requestId, textures: [], error: (err as Error).message });
+    }
+  }
+
+  // -- texture editing ------------------------------------------------------------
+
+  private async pickImage(requestId: number): Promise<void> {
+    const picked = await vscode.window.showOpenDialog({
+      canSelectMany: false,
+      openLabel: 'Use image',
+      defaultUri: dirname(this.uri),
+      filters: { Images: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'dds'] },
+    });
+    if (!picked?.[0]) {
+      this.post({ type: 'pickedImage', requestId });
+      return;
+    }
+    this.post({ type: 'pickedImage', requestId, name: basename(picked[0]), data: await vscode.workspace.fs.readFile(picked[0]) });
+  }
+
+  /** Resolves a texture origin sent by the webview, allowing only existing resource files. */
+  private async textureFile(origin: string): Promise<{ uri: vscode.Uri; kind: TextureFileKind }> {
+    const uri = vscode.Uri.parse(origin, true);
+    const ext = basename(uri).split('.').pop()?.toLowerCase() as TextureFileKind;
+    if (!['ytd', 'ydr', 'ydd', 'yft'].includes(ext)) throw new Error(`Not a texture container: ${basename(uri)}`);
+    await vscode.workspace.fs.stat(uri); // throws if it doesn't exist
+    return { uri, kind: ext };
+  }
+
+  private async getFullTexture(requestId: number, origin: string, name: string): Promise<void> {
+    try {
+      const { uri, kind } = await this.textureFile(origin);
+      const texture = readFullTexture(await vscode.workspace.fs.readFile(uri), kind, name);
+      this.post({ type: 'fullTexture', requestId, texture: { ...texture, origin } });
+    } catch (err) {
+      this.post({ type: 'fullTexture', requestId, error: (err as Error).message });
+    }
+  }
+
+  private async replaceTexture(m: Extract<WebviewToHost, { type: 'replaceTexture' }>): Promise<void> {
+    try {
+      const { uri, kind } = await this.textureFile(m.origin);
+      const file = basename(uri);
+      const choice = await vscode.window.showWarningMessage(
+        `Replace texture "${m.name}" in ${file}?`,
+        {
+          modal: true,
+          detail: `The texture is saved at ${m.width}×${m.height}${m.format ? ` as ${m.format}` : ' in its current format'}${
+            m.levels ? ` with ${m.levels} mip level${m.levels === 1 ? '' : 's'}` : ''
+          }${m.encoded ? ' (using the DDS data as-is)' : ''}. The original file is kept as ${file}.bak.`,
+        },
+        'Replace'
+      );
+      if (choice !== 'Replace') {
+        this.post({ type: 'textureReplaced', requestId: m.requestId, ok: false, cancelled: true });
+        return;
+      }
+      const original = await vscode.workspace.fs.readFile(uri);
+      const updated = replaceTexture(original, kind, m.name, {
+        width: m.width,
+        height: m.height,
+        format: m.format,
+        levels: m.levels,
+        rgba: m.rgba,
+        encoded: m.encoded,
+      });
+      await writeWithBackup(uri, original, updated);
+      this.post({ type: 'textureReplaced', requestId: m.requestId, ok: true, file });
+    } catch (err) {
+      this.post({ type: 'textureReplaced', requestId: m.requestId, ok: false, error: (err as Error).message });
+    }
+  }
+
+  private async pickImages(requestId: number): Promise<void> {
+    const picked = await vscode.window.showOpenDialog({
+      canSelectMany: true,
+      openLabel: 'Add to dictionary',
+      defaultUri: dirname(this.uri),
+      filters: { Images: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'dds'] },
+    });
+    const files = await Promise.all((picked ?? []).map(async (uri) => ({ name: basename(uri), data: await vscode.workspace.fs.readFile(uri) })));
+    this.post({ type: 'pickedImages', requestId, files });
+  }
+
+  /** Resolves a .ytd origin sent by the webview. */
+  private async ytdFile(origin: string): Promise<vscode.Uri> {
+    const { uri, kind } = await this.textureFile(origin);
+    if (kind !== 'ytd') throw new Error('Textures can only be added, deleted or renamed in a .ytd.');
+    return uri;
+  }
+
+  private async editYtd(m: Extract<WebviewToHost, { type: 'editYtd' }>): Promise<void> {
+    const reply = (r: Omit<Extract<HostToWebview, { type: 'ytdEdited' }>, 'type' | 'requestId'>) => this.post({ type: 'ytdEdited', requestId: m.requestId, ...r });
+    try {
+      const uri = await this.ytdFile(m.origin);
+      const file = basename(uri);
+      const original = await vscode.workspace.fs.readFile(uri);
+      // Encode before asking, so problems show up first.
+      const add: NewTexture[] = (m.add ?? []).map((t) => ({ ...t, ...encodeImage(t.name, t) }));
+      const existing = new Set(parseYtd(original, { maxSize: 1 }).map((t) => t.name.toLowerCase()));
+      const replaced = add.filter((t) => existing.has(t.name.toLowerCase())).map((t) => t.name);
+      const list = (names: string[]) => (names.length > 8 ? `${names.slice(0, 8).join(', ')} and ${names.length - 8} more` : names.join(', '));
+      const parts = [
+        add.length && `add ${add.length} texture${add.length === 1 ? '' : 's'} (${list(add.map((t) => `${t.name} ${t.width}×${t.height} ${t.format}`))})`,
+        replaced.length && `replace the existing ${list(replaced)}`,
+        m.rename?.length && `rename ${list(m.rename.map((r) => `${r.from} → ${r.to}`))}`,
+        m.remove?.length && `delete ${list(m.remove)}`,
+      ].filter(Boolean);
+      if (!parts.length) return reply({ ok: false, cancelled: true });
+      const action = m.remove?.length && !add.length ? 'Delete' : 'Save';
+      const choice = await vscode.window.showWarningMessage(
+        `${action === 'Delete' ? `Delete ${m.remove!.length} texture${m.remove!.length === 1 ? '' : 's'}` : 'Change textures'} in ${file}?`,
+        { modal: true, detail: `${m.note ? `${m.note}\n\n` : ''}This will ${parts.join('; ')}. The dictionary is rebuilt; the original file is kept as ${file}.bak.` },
+        action
+      );
+      if (choice !== action) return reply({ ok: false, cancelled: true });
+      const edit: YtdEdit = { rename: m.rename, remove: m.remove, add };
+      await writeWithBackup(uri, original, editYtd(original, edit));
+      reply({ ok: true, file });
+    } catch (err) {
+      reply({ ok: false, error: (err as Error).message });
+    }
+  }
+
+  private async renameTexture(requestId: number, origin: string, name: string): Promise<void> {
+    const reply = (r: Omit<Extract<HostToWebview, { type: 'ytdEdited' }>, 'type' | 'requestId'>) => this.post({ type: 'ytdEdited', requestId, ...r });
+    try {
+      const uri = await this.ytdFile(origin);
+      const file = basename(uri);
+      const original = await vscode.workspace.fs.readFile(uri);
+      const others = new Set(parseYtd(original, { maxSize: 1 }).map((t) => t.name.toLowerCase()).filter((n) => n !== name.toLowerCase()));
+      const to = await vscode.window.showInputBox({
+        title: `Rename texture in ${file}`,
+        prompt: `New name for "${name}". Models find textures by name, so update any that use it. The original file is kept as ${file}.bak.`,
+        value: name,
+        validateInput: (v) => textureNameProblem(v.trim()) ?? (others.has(v.trim().toLowerCase()) ? `A texture named "${v.trim()}" already exists.` : undefined),
+      });
+      if (to === undefined || to.trim() === name) return reply({ ok: false, cancelled: true });
+      await writeWithBackup(uri, original, editYtd(original, { rename: [{ from: name, to: to.trim() }] }));
+      reply({ ok: true, file });
+    } catch (err) {
+      reply({ ok: false, error: (err as Error).message });
+    }
+  }
+
+  private async exportDds(requestId: number, origin: string, name: string): Promise<void> {
+    try {
+      const { uri, kind } = await this.textureFile(origin);
+      const dds = exportDds(await vscode.workspace.fs.readFile(uri), kind, name);
+      await this.saveFile(requestId, `${name}.dds`, dds, 'DDS texture', ['dds']);
+    } catch (err) {
+      this.post({ type: 'saved', requestId, error: (err as Error).message });
+    }
+  }
+
+  private async saveFile(requestId: number, suggestedName: string, data: Uint8Array, filterName: string, extensions: string[]): Promise<void> {
+    try {
+      const target = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.joinPath(dirname(this.uri), suggestedName.replace(/[\\/:*?"<>|]/g, '_')),
+        filters: { [filterName]: extensions },
+      });
+      if (!target) {
+        this.post({ type: 'saved', requestId, cancelled: true });
+        return;
+      }
+      await vscode.workspace.fs.writeFile(target, data);
+      this.post({ type: 'saved', requestId, path: target.fsPath || target.path });
+    } catch (err) {
+      this.post({ type: 'saved', requestId, error: (err as Error).message });
+    }
+  }
+
+  /**
+   * Finds each livery set's textures: the vehicle's own dictionary first, then
+   * the nearest dictionary that has any `<prefix><n>` texture.
+   */
+  private async findLiveries(requestId: number, prefixes: string[], maxSize?: number): Promise<void> {
+    const opts = { maxSize: Math.min(maxSize ?? Infinity, config('maxTextureSize', 1024)) };
+    const model = vehicleName(this.uri);
+    const ytds = await this.index.byExt('ytd');
+    const ordered = [...ytds.filter((f) => f.base === model), ...ytds.filter((f) => f.base !== model)];
+    const sets: Extract<HostToWebview, { type: 'liveries' }>['sets'] = [];
+    for (const raw of prefixes) {
+      const prefix = raw.toLowerCase();
+      const isLivery = (n: string) => n === prefix || (n.startsWith(prefix) && /^\d+$/.test(n.slice(prefix.length)));
+      let found: { prefix: string; origin?: string; textures: TextureData[] } = { prefix, textures: [] };
+      for (const ytd of ordered.slice(0, MAX_YTD_SCAN)) {
+        if (this.disposed) return;
+        const names = await this.ytdNames(ytd);
+        const wanted = new Set([...(names ?? [])].filter(isLivery));
+        if (!wanted.size) continue;
+        const data = await vscode.workspace.fs.readFile(ytd.uri);
+        found = { prefix, origin: ytd.uri.toString(), textures: tagOrigin(readYtdTextures(data, wanted, opts), ytd.uri) };
+        break;
+      }
+      sets.push(found);
+    }
+    this.post({ type: 'liveries', requestId, model, sets });
+  }
+
+  /** Lower-cased texture names in a dictionary (cached by mtime and size); undefined if unreadable. */
+  private async ytdNames(ytd: AssetFile): Promise<Set<string> | undefined> {
+    try {
+      const key = ytd.uri.toString();
+      const stat = await vscode.workspace.fs.stat(ytd.uri);
+      let entry = ytdNameCache.get(key);
+      if (!entry || entry.mtime !== stat.mtime || entry.size !== stat.size) {
+        const data = await vscode.workspace.fs.readFile(ytd.uri);
+        entry = { mtime: stat.mtime, size: stat.size, names: new Set(listYtdTextureNames(data).map((n) => n.toLowerCase())) };
+        ytdNameCache.set(key, entry);
+      }
+      return entry.names;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Follows an image file, sending its contents to the webview whenever it's saved. */
+  private follow(uri: vscode.Uri): number {
+    const linkId = this.nextLinkId++;
+    const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(dirname(uri), basename(uri)));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const send = () => {
+      clearTimeout(timer);
+      // Image editors often write in several steps; wait for them to finish.
+      timer = setTimeout(async () => {
+        try {
+          const data = await vscode.workspace.fs.readFile(uri);
+          if (data.length) this.post({ type: 'liveryLinkedImage', linkId, name: basename(uri), data });
+        } catch {
+          // Mid-save; the next change event brings the finished file.
+        }
+      }, 400);
+    };
+    const subs = [watcher.onDidChange(send), watcher.onDidCreate(send)];
+    this.links.set(linkId, { dispose: () => (clearTimeout(timer), subs.forEach((s) => s.dispose()), watcher.dispose()) });
+    return linkId;
+  }
+
+  private async liveryLink(requestId: number, suggestedName: string): Promise<void> {
+    try {
+      const picked = await vscode.window.showOpenDialog({
+        canSelectMany: false,
+        openLabel: 'Follow image',
+        title: `Image to use for ${suggestedName} (updates whenever you save it)`,
+        defaultUri: dirname(this.uri),
+        filters: { Images: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'dds'] },
+      });
+      if (!picked?.[0]) return this.post({ type: 'liveryLinkReply', requestId, cancelled: true });
+      const data = await vscode.workspace.fs.readFile(picked[0]);
+      const linkId = this.follow(picked[0]);
+      this.post({ type: 'liveryLinkReply', requestId, linkId, path: picked[0].fsPath || picked[0].path, name: basename(picked[0]), data });
+    } catch (err) {
+      this.post({ type: 'liveryLinkReply', requestId, error: (err as Error).message });
+    }
+  }
+
+  private async liveryExport(requestId: number, suggestedName: string, data: Uint8Array): Promise<void> {
+    try {
+      const target = await vscode.window.showSaveDialog({
+        title: 'Save the livery as an image to edit',
+        defaultUri: vscode.Uri.joinPath(dirname(this.uri), suggestedName.replace(/[\\/:*?"<>|]/g, '_')),
+        filters: { 'PNG image': ['png'] },
+      });
+      if (!target) return this.post({ type: 'liveryLinkReply', requestId, cancelled: true });
+      await vscode.workspace.fs.writeFile(target, data);
+      const linkId = this.follow(target);
+      this.post({ type: 'liveryLinkReply', requestId, linkId, path: target.fsPath || target.path, name: basename(target) });
+      void vscode.env.openExternal(target);
+    } catch (err) {
+      this.post({ type: 'liveryLinkReply', requestId, error: (err as Error).message });
+    }
+  }
+
+  /** Updates the vehicle's per-colour livery lists in carvariations.meta files near the model. */
+  private async liveryMeta(requestId: number, change: import('../formats/livery').LiveryChange): Promise<void> {
+    const model = vehicleName(this.uri);
+    try {
+      const { metas, manifest } = await this.variationFiles();
+      const files: { file: string; changed: number; emptied: number }[] = [];
+      const edit = new vscode.WorkspaceEdit();
+      const docs: vscode.TextDocument[] = [];
+      for (const uri of metas) {
+        const doc = await vscode.workspace.openTextDocument(uri);
+        const result = updateVariationLiveries(doc.getText(), model, change);
+        if (!result) continue;
+        files.push({ file: vscode.workspace.asRelativePath(uri), changed: result.changed, emptied: result.emptied });
+        if (!result.changed) continue;
+        edit.replace(uri, new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length)), result.text);
+        docs.push(doc);
+      }
+      if (docs.length && (await vscode.workspace.applyEdit(edit))) await Promise.all(docs.map((d) => d.save()));
+      this.post({ type: 'liveryMetaUpdated', requestId, files, ...(manifest ? { manifest: vscode.workspace.asRelativePath(manifest) } : {}) });
+    } catch (err) {
+      this.post({ type: 'liveryMetaUpdated', requestId, files: [], error: (err as Error).message });
+    }
+  }
+
+  /**
+   * The carvariations files the game would load with this model: those its
+   * resource's manifest declares as VEHICLE_VARIATION_FILE (so backups and
+   * copies lying around are left alone). Without a declaration, any
+   * carvariations.meta in the resource; without a manifest, only the model's
+   * own folder (or the one holding its stream folder).
+   */
+  private async variationFiles(): Promise<{ metas: vscode.Uri[]; manifest?: vscode.Uri }> {
+    const find = async (base: vscode.Uri, pattern: string) => vscode.workspace.findFiles(new vscode.RelativePattern(base, pattern), undefined, 50);
+    let dir = dirname(this.uri);
+    for (let i = 0; i < 4 && dir.path.split('/').filter(Boolean).length > 1; i++, dir = dirname(dir)) {
+      for (const name of ['fxmanifest.lua', '__resource.lua']) {
+        const manifest = vscode.Uri.joinPath(dir, name);
+        let text: string;
+        try {
+          text = new TextDecoder().decode(await vscode.workspace.fs.readFile(manifest));
+        } catch {
+          continue;
+        }
+        const declared = declaredFiles(text, 'VEHICLE_VARIATION_FILE');
+        if (!declared.length) return { metas: await find(dir, '**/carvariations.meta'), manifest };
+        const metas = new Map<string, vscode.Uri>();
+        for (const path of declared) {
+          if (/[*?{[]/.test(path)) (await find(dir, path)).forEach((u) => metas.set(u.toString(), u));
+          else {
+            const uri = vscode.Uri.joinPath(dir, path);
+            try {
+              await vscode.workspace.fs.stat(uri);
+              metas.set(uri.toString(), uri);
+            } catch {
+              // Declared but missing: nothing to update.
+            }
+          }
+        }
+        return { metas: [...metas.values()], manifest };
+      }
+    }
+    const folder = dirname(this.uri);
+    return { metas: await find(basename(folder).toLowerCase() === 'stream' ? dirname(folder) : folder, '**/carvariations.meta') };
+  }
+
+  private async openAsset(name: string, ext: 'ydr' | 'ydd' | 'yft' | 'ytd' | 'yld'): Promise<void> {
+    const hash = nameToHash(name);
+    const file = (await this.index.byExt(ext)).find((f) => f.hash === hash);
+    if (!file) {
+      void vscode.window.showWarningMessage(`Could not find ${name}.${ext} near ${basename(this.uri)}.`);
+      return;
+    }
+    const kind = ({ ydr: 'drawable', ydd: 'dictionary', yft: 'fragment', ytd: 'ytd', yld: 'yld' } as const)[ext];
+    await vscode.commands.executeCommand('vscode.openWith', file.uri, VIEW_TYPES[kind]);
+  }
+}
+
+// -- liveries ---------------------------------------------------------------------
+
+/** Files a resource manifest declares as `data_file '<kind>' '<path>'` (paths relative to it). */
+export function declaredFiles(manifest: string, kind: string): string[] {
+  const code = manifest.replace(/--\[(=*)\[[\s\S]*?\]\1\]/g, '').replace(/--[^\n]*/g, '');
+  const re = /data_file\s*\(?\s*(['"])([^'"]+)\1\s*\)?\s*\(?\s*(['"])([^'"]+)\3/g;
+  return [...code.matchAll(re)].filter((m) => m[2].toUpperCase() === kind).map((m) => m[4].replace(/^\.?\//, ''));
+}
+
+/** `navaho_hi.yft` → `navaho`: the vehicle a model file belongs to. */
+function vehicleName(uri: vscode.Uri): string {
+  return basename(uri).replace(/\.[^.]+$/, '').replace(/_hi$/i, '').toLowerCase();
+}
+
+/** Writes `updated`, keeping the first original as `<file>.bak` (later saves don't overwrite it). */
+async function writeWithBackup(uri: vscode.Uri, original: Uint8Array, updated: Uint8Array): Promise<void> {
+  const backup = uri.with({ path: `${uri.path}.bak` });
+  try {
+    await vscode.workspace.fs.stat(backup);
+  } catch {
+    await vscode.workspace.fs.writeFile(backup, original);
+  }
+  await vscode.workspace.fs.writeFile(uri, updated);
+}
+
+function tagOrigin(textures: TextureData[], uri: vscode.Uri): TextureData[] {
+  const origin = uri.toString();
+  for (const t of textures) t.origin = origin;
+  return textures;
+}
+
+function withOrigin(drawables: DrawableData[], uri: vscode.Uri): DrawableData[] {
+  for (const d of drawables) tagOrigin(d.textures, uri);
+  return drawables;
+}
+
+function looksLikeXml(data: Uint8Array): boolean {
+  let i = data[0] === 0xef && data[1] === 0xbb && data[2] === 0xbf ? 3 : 0; // UTF-8 BOM
+  while (i < data.length && (data[i] === 0x20 || data[i] === 0x09 || data[i] === 0x0a || data[i] === 0x0d)) i++;
+  return data[i] === 0x3c; // '<'
+}
+
+/** Accepts a plain name or an unresolved `hash_XXXXXXXX` placeholder. */
+function nameToHash(name: string): number {
+  const m = /^hash_([0-9a-f]{8})$/i.exec(name);
+  return m ? parseInt(m[1], 16) : joaat(name);
+}
+
+function config<T>(key: string, fallback: T): T {
+  return vscode.workspace.getConfiguration('gtaPreview').get<T>(key, fallback);
+}
+
+function makeNonce(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let s = '';
+  for (let i = 0; i < 32; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
+}

@@ -1,0 +1,379 @@
+{
+  "name": "gta-v-asset-preview",
+  "displayName": "GTA V Asset Preview",
+  "description": "Preview and edit GTA V assets in VS Code: 3D models (.ydr/.ydd/.yft), textures (.ytd), archetypes and MLO interiors (.ytyp), maps (.ymap), collisions (.ybn), ped clothing (.ymt), animations (.ycd) and cloth physics (.yld). Edit vehicle liveries in 3D, build FiveM addon clothing packs, plus a resource health check, batch texture optimiser and asset browser. Pure TypeScript \u2014 works on Windows, macOS, Linux and vscode.dev.",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#10141a",
+    "theme": "dark"
+  },
+  "version": "0.14.0",
+  "publisher": "ncss-ltd",
+  "license": "GPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MartinNelsonNCSS/gta_v_preview.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MartinNelsonNCSS/gta_v_preview/issues"
+  },
+  "homepage": "https://github.com/MartinNelsonNCSS/gta_v_preview#readme",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "gta",
+    "gta5",
+    "fivem",
+    "ydr",
+    "ydd",
+    "ytyp",
+    "ytd",
+    "codewalker",
+    "rage",
+    "ymap",
+    "ybn",
+    "yft",
+    "ycd",
+    "yld",
+    "ymt"
+  ],
+  "main": "./dist/extension.js",
+  "browser": "./dist/extension.web.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": true
+  },
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "gtaPreview.ydr",
+        "displayName": "GTA V Drawable Preview",
+        "selector": [
+          {
+            "filenamePattern": "*.ydr"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "gtaPreview.ydd",
+        "displayName": "GTA V Drawable Dictionary Preview",
+        "selector": [
+          {
+            "filenamePattern": "*.ydd"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "gtaPreview.yft",
+        "displayName": "GTA V Fragment Preview",
+        "selector": [
+          {
+            "filenamePattern": "*.yft"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "gtaPreview.ytyp",
+        "displayName": "GTA V Archetype Preview",
+        "selector": [
+          {
+            "filenamePattern": "*.ytyp"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "gtaPreview.ytd",
+        "displayName": "GTA V Texture Dictionary Preview",
+        "selector": [
+          {
+            "filenamePattern": "*.ytd"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "gtaPreview.ymap",
+        "displayName": "GTA V Map Preview",
+        "selector": [
+          {
+            "filenamePattern": "*.ymap"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "gtaPreview.ybn",
+        "displayName": "GTA V Collision Preview",
+        "selector": [
+          {
+            "filenamePattern": "*.ybn"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "gtaPreview.ycd",
+        "displayName": "GTA V Animation Preview",
+        "selector": [
+          {
+            "filenamePattern": "*.ycd"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "gtaPreview.yld",
+        "displayName": "GTA V Cloth Preview",
+        "selector": [
+          {
+            "filenamePattern": "*.yld"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "gtaPreview.clothPack",
+        "displayName": "GTA V Clothing Pack",
+        "selector": [
+          {
+            "filenamePattern": "*.clothpack.json"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "gtaPreview.ymt",
+        "displayName": "GTA V Meta Preview",
+        "selector": [
+          {
+            "filenamePattern": "*.ymt"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "configuration": {
+      "title": "GTA V Asset Preview",
+      "properties": {
+        "gtaPreview.assetSearch": {
+          "type": "string",
+          "enum": [
+            "workspace",
+            "folder",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Search the whole workspace folder for .ytd/.ydr/.ydd files referenced by the previewed file.",
+            "Only search around the previewed file (its parent folder and subfolders).",
+            "Don't look for external textures or models."
+          ],
+          "default": "workspace",
+          "description": "Where to look for external texture dictionaries (.ytd) and models (.ydr/.ydd) referenced by the previewed file."
+        },
+        "gtaPreview.maxTextureSize": {
+          "type": "number",
+          "enum": [
+            256,
+            512,
+            1024,
+            2048,
+            4096
+          ],
+          "default": 1024,
+          "description": "Largest texture dimension to decode. Bigger textures use a smaller mip level, which keeps previews fast."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "gtaPreview.newClothPack",
+        "title": "New Clothing Pack\u2026",
+        "category": "GTA V"
+      },
+      {
+        "command": "gtaPreview.importClothPack",
+        "title": "Import Clothing Resource as Pack\u2026",
+        "category": "GTA V"
+      },
+      {
+        "command": "gtaPreview.convertToDds",
+        "title": "Convert to DDS\u2026",
+        "category": "GTA V"
+      },
+      {
+        "command": "gtaPreview.checkResources",
+        "title": "Check Resources",
+        "category": "GTA V",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "gtaPreview.optimizeTextures",
+        "title": "Optimize Textures\u2026",
+        "category": "GTA V",
+        "icon": "$(zap)"
+      },
+      {
+        "command": "gtaPreview.findAsset",
+        "title": "Find Asset\u2026",
+        "category": "GTA V",
+        "icon": "$(search)"
+      },
+      {
+        "command": "gtaPreview.findUsages",
+        "title": "Find Usages",
+        "category": "GTA V",
+        "icon": "$(references)"
+      },
+      {
+        "command": "gtaPreview.refreshAssets",
+        "title": "Rescan Assets",
+        "category": "GTA V",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "gtaPreview.newClothPack",
+          "when": "explorerResourceIsFolder",
+          "group": "7_modification@88"
+        },
+        {
+          "command": "gtaPreview.importClothPack",
+          "when": "explorerResourceIsFolder",
+          "group": "7_modification@89"
+        },
+        {
+          "command": "gtaPreview.convertToDds",
+          "when": "resourceExtname =~ /^\\.(png|jpe?g|webp|bmp|gif|dds)$/i",
+          "group": "7_modification@90"
+        },
+        {
+          "command": "gtaPreview.optimizeTextures",
+          "when": "explorerResourceIsFolder || resourceExtname == .ytd",
+          "group": "7_modification@91"
+        },
+        {
+          "command": "gtaPreview.findUsages",
+          "when": "resourceExtname =~ /^\\.(ydr|ydd|yft|ytd|ytyp|ymap|ybn|ymt)$/i",
+          "group": "7_modification@92"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "gtaPreview.findAsset",
+          "when": "view == gtaPreview.assets",
+          "group": "navigation@1"
+        },
+        {
+          "command": "gtaPreview.refreshAssets",
+          "when": "view == gtaPreview.assets",
+          "group": "navigation@2"
+        },
+        {
+          "command": "gtaPreview.checkResources",
+          "when": "view == gtaPreview.health",
+          "group": "navigation@1"
+        },
+        {
+          "command": "gtaPreview.optimizeTextures",
+          "when": "view == gtaPreview.health",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "gtaPreview.findUsages",
+          "when": "view == gtaPreview.assets && viewItem =~ /^(texture|archetype|model|file-)/",
+          "group": "inline"
+        },
+        {
+          "command": "gtaPreview.findUsages",
+          "when": "view == gtaPreview.assets && viewItem =~ /^(texture|archetype|model|file-)/",
+          "group": "navigation@1"
+        },
+        {
+          "command": "gtaPreview.optimizeTextures",
+          "when": "view == gtaPreview.assets && viewItem =~ /^(resource|file-ytd)$/",
+          "group": "navigation@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "gtaPreview.findUsages",
+          "when": "false"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "gtaPreview",
+          "title": "GTA V",
+          "icon": "media/sidebar.svg"
+        }
+      ]
+    },
+    "views": {
+      "gtaPreview": [
+        {
+          "id": "gtaPreview.assets",
+          "name": "Assets",
+          "icon": "media/sidebar.svg",
+          "contextualTitle": "GTA V"
+        },
+        {
+          "id": "gtaPreview.health",
+          "name": "Resource Health",
+          "icon": "media/sidebar.svg",
+          "contextualTitle": "GTA V"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "gtaPreview.assets",
+        "contents": "Scanning the workspace for GTA V assets\u2026\nIf nothing appears, open a folder that contains FiveM resources.\n[Rescan](command:gtaPreview.refreshAssets)"
+      },
+      {
+        "view": "gtaPreview.health",
+        "contents": "Check your FiveM resources for oversized assets, missing textures, broken references, name clashes and fxmanifest gaps.\n[Check Resources](command:gtaPreview.checkResources)\nOr shrink texture memory across a resource or the whole workspace:\n[Optimize Textures\u2026](command:gtaPreview.optimizeTextures)"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "inspect": "node esbuild.mjs --tools && node out/inspect.js",
+    "package": "npm run typecheck && vsce package --no-dependencies",
+    "vscode:prepublish": "node esbuild.mjs --production",
+    "hosttest": "esbuild tools/hosttest/run.ts --bundle --platform=node --outfile=out/hosttest.js --alias:vscode=./tools/hosttest/vscode-stub.ts --log-level=warning && node out/hosttest.js",
+    "harness": "node esbuild.mjs && node esbuild.mjs --tools && node tools/harness/serve.mjs",
+    "test:vscode": "node tools/vscode-test/run.mjs"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3",
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/three": "^0.186.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}

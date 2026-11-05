@@ -1,0 +1,545 @@
+/**
+ * Plain-data scene description produced by the parsers (extension host) and
+ * consumed by the renderer (webview). Everything here must survive
+ * postMessage, so only plain objects and typed arrays are allowed.
+ */
+
+export type Vec3 = [number, number, number];
+export type Quat = [number, number, number, number]; // x, y, z, w
+
+export interface TexturePixels {
+  width: number;
+  height: number;
+  /** 'rgba' is ready to upload; 'bc7' is raw BC7 blocks the webview decodes on the GPU. */
+  encoding: 'rgba' | 'bc7';
+  data: Uint8Array;
+}
+
+export interface TextureData {
+  name: string;
+  width: number;
+  height: number;
+  format: string;
+  levels: number;
+  /** Missing when the texture is only a reference to an external dictionary. */
+  pixels?: TexturePixels;
+  /** URI of the file that contains this texture (set by the extension host). */
+  origin?: string;
+}
+
+export interface ShaderTextureRef {
+  /** Shader parameter name, e.g. "DiffuseSampler". */
+  param: string;
+  texture: string;
+}
+
+export interface ShaderData {
+  name: string;
+  file: string;
+  renderBucket: number;
+  textures: ShaderTextureRef[];
+  /** Lower-cased name of the main colour texture, if any. */
+  diffuse?: string;
+  /** The diffuse texture is a decal (e.g. a vehicle livery) drawn over a base colour. */
+  diffuseIsOverlay?: boolean;
+  normal?: string;
+}
+
+export interface MeshData {
+  shaderIndex: number;
+  positions: Float32Array;
+  normals?: Float32Array;
+  uvs?: Float32Array;
+  /** Second UV set (TexCoord1), where present. */
+  uvs2?: Float32Array;
+  /** RGBA, 4 bytes per vertex. */
+  colors?: Uint8Array;
+  indices: Uint16Array | Uint32Array;
+}
+
+export interface ModelData {
+  /** Index of the bone this model is attached to (non-skinned models only). */
+  boneIndex: number;
+  skinned: boolean;
+  renderMask: number;
+  meshes: MeshData[];
+}
+
+export type LodLevel = 'high' | 'med' | 'low' | 'vlow';
+export const LOD_LEVELS: LodLevel[] = ['high', 'med', 'low', 'vlow'];
+
+export interface BoneData {
+  name: string;
+  tag: number;
+  parent: number;
+  /** Bone-to-model-space transform, column-major 4x4. */
+  world: number[];
+  /** Rest transform relative to the parent bone. */
+  translation?: Vec3;
+  rotation?: Quat;
+  scale?: Vec3;
+}
+
+export interface DrawableData {
+  name: string;
+  /** Hash key of this drawable inside a .ydd. */
+  nameHash?: number;
+  bbMin: Vec3;
+  bbMax: Vec3;
+  center: Vec3;
+  radius: number;
+  lodDistances: Record<LodLevel, number>;
+  lods: Record<LodLevel, ModelData[]>;
+  shaders: ShaderData[];
+  bones: BoneData[];
+  /** Textures embedded in this drawable's shader group. */
+  textures: TextureData[];
+  /** Whether any shader references a texture not embedded in the file. */
+  hasExternalTextures: boolean;
+  /** Collision embedded in the drawable, if any. */
+  bounds?: BoundsData;
+}
+
+// ---------------------------------------------------------------------------
+// Collision (.ybn, or embedded in drawables)
+// ---------------------------------------------------------------------------
+
+export type CollisionPrimitive =
+  | { kind: 'sphere'; material: number; center: Vec3; radius: number }
+  | { kind: 'box'; material: number; center: Vec3; /** Half-extent vectors. */ axes: [Vec3, Vec3, Vec3] }
+  | { kind: 'capsule' | 'cylinder'; material: number; a: Vec3; b: Vec3; radius: number };
+
+export interface BoundsData {
+  bbMin: Vec3;
+  bbMax: Vec3;
+  triangles: number;
+  /** Non-indexed triangle soup, 9 floats per triangle. */
+  positions: Float32Array;
+  /** Material type index per triangle. */
+  triangleMaterials: Uint8Array;
+  primitives: CollisionPrimitive[];
+  /** Number of bounds of each kind (composite, bvh, box, ...). */
+  typeCounts: Record<string, number>;
+  /** Materials used, most frequent first (polygon/primitive counts). */
+  materials: { index: number; name: string; count: number }[];
+}
+
+// ---------------------------------------------------------------------------
+// .ytyp
+// ---------------------------------------------------------------------------
+
+export interface EntityData {
+  archetype: string;
+  position: Vec3;
+  rotation: Quat;
+  scale: Vec3;
+  lodDist: number;
+  flags: number;
+  room?: string;
+  entitySet?: string;
+  guid?: number;
+  /** e.g. LODTYPES_DEPTH_HD (ymap entities). */
+  lodLevel?: string;
+  parentIndex?: number;
+  /** True for CMloInstanceDef: an interior placed in the world. */
+  isMloInstance?: boolean;
+}
+
+export interface RoomData {
+  name: string;
+  bbMin: Vec3;
+  bbMax: Vec3;
+  timecycle: string;
+  entityIndices: number[];
+}
+
+export interface PortalData {
+  roomFrom: number;
+  roomTo: number;
+  corners: Vec3[];
+  flags: number;
+}
+
+export interface ArchetypeData {
+  type: 'CBaseArchetypeDef' | 'CTimeArchetypeDef' | 'CMloArchetypeDef' | string;
+  name: string;
+  assetName: string;
+  textureDictionary: string;
+  drawableDictionary: string;
+  physicsDictionary: string;
+  clipDictionary: string;
+  assetType: string;
+  lodDist: number;
+  flags: number;
+  specialAttribute: number;
+  bbMin: Vec3;
+  bbMax: Vec3;
+  bsCentre: Vec3;
+  bsRadius: number;
+  timeFlags?: number;
+  mlo?: {
+    entities: EntityData[];
+    rooms: RoomData[];
+    portals: PortalData[];
+    entitySets: { name: string; entityCount: number }[];
+  };
+}
+
+export interface CarGenData {
+  position: Vec3;
+  orientX: number;
+  orientY: number;
+  perpendicularLength: number;
+  model: string;
+  flags: number;
+  popGroup: string;
+  livery: number;
+}
+
+export interface YmapData {
+  name: string;
+  parent: string;
+  flags: number;
+  contentFlags: number;
+  streamingExtents: [Vec3, Vec3];
+  entitiesExtents: [Vec3, Vec3];
+  entities: EntityData[];
+  carGenerators: CarGenData[];
+  timecycleModifiers: { name: string; min: Vec3; max: Vec3 }[];
+  physicsDictionaries: string[];
+  boxOccluders: number;
+  occludeModels: number;
+  grassBatches: number;
+  lodLights: number;
+  block?: { name: string; exportedBy: string; owner: string; time: string };
+  raw: unknown;
+}
+
+export interface PedDrawable {
+  index: number;
+  /** Expected model file name without prefix/extension, e.g. `jbib_004_u` or `p_head_002`. */
+  file: string;
+  /** Texture variations; `file` is the expected .ytd name, e.g. `jbib_diff_004_a_uni`. */
+  textures: { letter: string; file: string }[];
+  cloth: boolean;
+  alternatives: number;
+}
+
+export interface PedSlot {
+  slot: number;
+  /** File-name key, e.g. `jbib` or `p_head`. */
+  key: string;
+  label: string;
+  drawables: PedDrawable[];
+}
+
+export interface PedVariationData {
+  dlcName: string;
+  hasLowLods: boolean;
+  components: PedSlot[];
+  props: PedSlot[];
+  selectionSets: number;
+}
+
+export interface YmtData {
+  name: string;
+  rootType: string;
+  pedVariation?: PedVariationData;
+  raw: unknown;
+}
+
+/** A .ytd offered to the texture optimiser. */
+export interface OptimizerFile {
+  uri: string;
+  file: string;
+  resource: string;
+  rel: string;
+  graphicsSize: number;
+  systemSize: number;
+  textures: { name: string; width: number; height: number; format: string; levels: number; size: number }[];
+}
+
+export interface YtypData {
+  name: string;
+  archetypes: ArchetypeData[];
+  dependencies: string[];
+  /** Generic tree of the whole meta document, for the raw view. */
+  raw: unknown;
+}
+
+// ---------------------------------------------------------------------------
+// Animations (.ycd)
+// ---------------------------------------------------------------------------
+
+export interface AnimTrack {
+  boneId: number;
+  /** 0 = position, 1 = rotation, 2 = scale, 5 = mover position, 6 = mover rotation, ... */
+  track: number;
+  /** Values per frame: 4 for quaternions (x, y, z, w), 3 for vectors, 1 for floats. */
+  components: number;
+  /** frames × components values. */
+  values: Float32Array;
+}
+
+export interface AnimationInfo {
+  hash: number;
+  frames: number;
+  duration: number;
+  tracks: AnimTrack[];
+}
+
+export interface ClipInfo {
+  name: string;
+  /** Index into the dictionary's animations, or -1. For animation lists, the first animation. */
+  animation: number;
+  /** Time range of the animation the clip plays, in seconds. */
+  start: number;
+  end: number;
+  rate: number;
+  /** Tags (events) with their start/end phase (0-1). */
+  tags: { name: string; start: number; end: number }[];
+  properties: string[];
+}
+
+export interface ClipDictionaryData {
+  clips: ClipInfo[];
+  animations: AnimationInfo[];
+}
+
+/** A model whose skeleton an animation drives (e.g. va_<vehicle>.ycd → <vehicle>.yft). */
+export interface AnimTarget {
+  file: string;
+  drawable: DrawableData;
+}
+
+// ---------------------------------------------------------------------------
+// Cloth (.yld)
+// ---------------------------------------------------------------------------
+
+/** A collision shape the cloth reacts to, attached to a ped bone. */
+export interface ClothCollider {
+  /** Ped bone tag the shape follows. */
+  boneTag: number;
+  /** Shape transform relative to the bone, column-major 4x4. */
+  matrix: number[];
+  bounds: BoundsData;
+}
+
+export interface ClothData {
+  /** Name of the drawable this cloth belongs to (e.g. "accs_002_u"). */
+  name: string;
+  hash: number;
+  /** Simulated vertices in ped model space, 3 floats each. */
+  positions: Float32Array;
+  /** Triangles over `positions`. */
+  indices: Uint16Array;
+  /** Distance constraints (stretch links) as vertex index pairs. */
+  edges: Uint16Array;
+  /** Secondary (bend) constraints as vertex index pairs. */
+  bendEdges: Uint16Array;
+  /** The first `pinned` vertices are fixed to the body; the rest are simulated. */
+  pinned: number;
+  /** Bones the pinned vertices are skinned to. */
+  boneTags: number[];
+  colliders: ClothCollider[];
+  bbMin: Vec3;
+  bbMax: Vec3;
+}
+
+export interface YldData {
+  cloths: ClothData[];
+}
+
+// ---------------------------------------------------------------------------
+// Messages
+// ---------------------------------------------------------------------------
+
+export type ViewKind = 'drawable' | 'dictionary' | 'fragment' | 'ytyp' | 'ytd' | 'ymap' | 'ybn' | 'ymt' | 'ycd' | 'yld';
+
+export interface ArchetypeRequest {
+  /** Archetype name (may be an unresolved `hash_XXXXXXXX`). */
+  name: string;
+  /** Drawable dictionary (.ydd) that holds the model, if any. */
+  dictionary?: string;
+}
+
+export type HostToWebview =
+  | { type: 'drawables'; file: string; kind: 'drawable' | 'dictionary' | 'fragment'; drawables: DrawableData[] }
+  | { type: 'ytyp'; file: string; ytyp: YtypData }
+  | { type: 'ytd'; file: string; textures: TextureData[] }
+  | { type: 'ymap'; file: string; ymap: YmapData }
+  | { type: 'ybn'; file: string; bounds: BoundsData }
+  | {
+      type: 'yld';
+      file: string;
+      yld: YldData;
+      /** The clothing model the cloth belongs to (same-named .ydd next to the .yld), if found. */
+      model?: { file: string; drawables: DrawableData[] };
+      /** A texture variation for the model (first matching .ytd), used as its diffuse. */
+      variation?: TextureData;
+    }
+  | {
+      type: 'ycd';
+      file: string;
+      ycd: ClipDictionaryData;
+      /** Nearby models whose skeletons match non-ped animations. */
+      targets: AnimTarget[];
+      /** Why a matching model couldn't be used (e.g. it's encrypted). */
+      targetNotes: string[];
+    }
+  | {
+      type: 'ymt';
+      file: string;
+      ymt: YmtData;
+      /** Lower-case base names of model/texture files in the .ymt's folder tree. */
+      files: string[];
+    }
+  | { type: 'text'; file: string; text: string; note: string }
+  | { type: 'drawableFile'; requestId: number; drawables: DrawableData[]; error?: string }
+  | { type: 'textureFile'; requestId: number; textures: TextureData[]; error?: string }
+  | { type: 'pickedImage'; requestId: number; name?: string; data?: Uint8Array }
+  | { type: 'pickedImages'; requestId: number; files: { name: string; data: Uint8Array }[] }
+  /** Result of adding, deleting or renaming textures in a .ytd. */
+  | { type: 'ytdEdited'; requestId: number; ok: boolean; cancelled?: boolean; error?: string; file?: string }
+  | { type: 'fullTexture'; requestId: number; texture?: TextureData; error?: string }
+  | { type: 'textureReplaced'; requestId: number; ok: boolean; cancelled?: boolean; error?: string; file?: string }
+  | { type: 'saved'; requestId: number; path?: string; cancelled?: boolean; error?: string }
+  /** Images to convert in the DDS converter panel. */
+  | { type: 'converterFiles'; files: { name: string; uri: string; data: Uint8Array }[] }
+  | { type: 'converted'; requestId: number; ok: boolean; path?: string; skipped?: boolean; replaceAll?: boolean; error?: string }
+  /** Texture dictionaries for the optimiser panel. */
+  | { type: 'optimizerFiles'; scope: string; files: OptimizerFile[] }
+  | {
+      type: 'optimizeProgress';
+      uri: string;
+      ok: boolean;
+      before?: number;
+      after?: number;
+      changed?: number;
+      skipped?: { name: string; reason: string }[];
+      error?: string;
+    }
+  | { type: 'optimizeDone'; cancelled?: boolean }
+  | { type: 'textures'; requestId: number; textures: TextureData[]; source: string; searched: number; done: boolean }
+  | {
+      type: 'archetypeModels';
+      requestId: number;
+      /** Keyed by the requested archetype name; null when no model file was found. */
+      models: Record<string, DrawableData | null>;
+      /** Archetype definitions found in nearby .ytyp files (includes MLO layouts). */
+      archetypes: Record<string, ArchetypeData | null>;
+      done: boolean;
+    }
+  /** Clothing pack editor: the project and which referenced files exist. */
+  | { type: 'pack'; file: string; pack: import('../formats/clothPack').ClothPack; exists: Record<string, boolean> }
+  | { type: 'packChecks'; requestId: number; issues: PackIssue[] }
+  | { type: 'packBuilt'; requestId: number; ok: boolean; cancelled?: boolean; error?: string; output?: string; files?: number; warnings?: string[] }
+  | { type: 'packPicked'; requestId: number; paths: string[] }
+  /** Models picked to add, with what was detected; the webview resolves gaps and duplicates. */
+  | { type: 'packCandidates'; requestId: number; candidates: PackCandidate[] }
+  /** Groups of drawables whose model or texture files are identical. */
+  | { type: 'packDuplicates'; requestId: number; groups: { kind: 'model' | 'texture'; ids: string[]; file: string }[] }
+  | { type: 'liveries'; requestId: number; model: string; sets: { prefix: string; origin?: string; textures: TextureData[] }[] }
+  | { type: 'liveryLinkReply'; requestId: number; linkId?: number; path?: string; name?: string; data?: Uint8Array; cancelled?: boolean; error?: string }
+  /** A followed livery image changed on disk. */
+  | { type: 'liveryLinkedImage'; linkId: number; name: string; data: Uint8Array }
+  | { type: 'liveryMetaUpdated'; requestId: number; files: { file: string; changed: number; emptied: number }[]; manifest?: string; error?: string }
+  | { type: 'error'; message: string }
+  | { type: 'status'; message: string };
+
+/** A model picked for adding to a clothing pack. */
+export interface PackCandidate {
+  model: string;
+  gender?: import('../formats/clothPack').Gender;
+  kind?: import('../formats/clothPack').DrawableKind;
+  slot?: string;
+  hasSkin?: boolean;
+  textures: string[];
+  cloth?: string;
+  /** Id of an existing drawable with the same model file or identical contents. */
+  duplicateOf?: string;
+}
+
+/** A problem found by a clothing pack check; `id` is the drawable it concerns. */
+export interface PackIssue {
+  id?: string;
+  severity: 'error' | 'warning' | 'info';
+  message: string;
+}
+
+export type WebviewToHost =
+  | { type: 'ready' }
+  | { type: 'findTextures'; requestId: number; names: string[]; hints: string[]; maxSize?: number }
+  | { type: 'loadArchetypes'; requestId: number; archetypes: ArchetypeRequest[]; maxTextureSize?: number }
+  | { type: 'openAsset'; name: string; ext: 'ydr' | 'ydd' | 'yft' | 'ytd' | 'yld' }
+  /** Loads every drawable in a model file found by base name (any of .ydd/.ydr/.yft). */
+  | { type: 'loadDrawableFile'; requestId: number; name: string; maxTextureSize?: number }
+  /** Loads every texture in a .ytd found by base name. */
+  | { type: 'loadTextureFile'; requestId: number; name: string; maxSize?: number }
+  | { type: 'openAsText' }
+  /** Opens a file picker for a replacement image (PNG/JPG/DDS...). */
+  | { type: 'pickImage'; requestId: number }
+  /** Opens a file picker for several images (to add to a .ytd). */
+  | { type: 'pickImages'; requestId: number }
+  /** Adds and/or deletes textures in the .ytd at `origin`, after confirmation. */
+  | {
+      type: 'editYtd';
+      requestId: number;
+      origin: string;
+      add?: { name: string; width: number; height: number; format: string; levels?: number; rgba?: Uint8Array; encoded?: Uint8Array }[];
+      remove?: string[];
+      /** Applied in order, before `remove`. */
+      rename?: { from: string; to: string }[];
+      /** Shown in the confirmation (why the change is being made). */
+      note?: string;
+    }
+  /** Every texture `<prefix><n>` of the given livery sets, from the dictionary that has them. */
+  | { type: 'findLiveries'; requestId: number; prefixes: string[]; maxSize?: number }
+  /** Picks an image file to follow as a livery's source (sent again whenever it changes). */
+  | { type: 'liveryLink'; requestId: number; suggestedName: string }
+  /** Saves `data` (a PNG) via a save dialog, opens it in the default image app and follows it. */
+  | { type: 'liveryExport'; requestId: number; suggestedName: string; data: Uint8Array }
+  | { type: 'liveryUnlink'; linkId: number }
+  /** Keeps the model's carvariations.meta livery lists in step after adding or removing a livery. */
+  | { type: 'liveryMeta'; requestId: number; change: import('../formats/livery').LiveryChange }
+  /** Asks for a new name for a texture in the .ytd at `origin` and renames it. */
+  | { type: 'renameTexture'; requestId: number; origin: string; name: string }
+  /** Full-resolution texture from the file at `origin`. */
+  | { type: 'getFullTexture'; requestId: number; origin: string; name: string }
+  /** Writes `rgba` (exactly the texture's size) into the file at `origin`, after confirmation. */
+  | {
+      type: 'replaceTexture';
+      requestId: number;
+      origin: string;
+      name: string;
+      width: number;
+      height: number;
+      format?: string;
+      levels?: number;
+      /** Pixels to encode, or `encoded` data (all mips) to store as-is. */
+      rgba?: Uint8Array;
+      encoded?: Uint8Array;
+    }
+  /** Saves the texture's original data as .dds (via a save dialog). */
+  | { type: 'exportDds'; requestId: number; origin: string; name: string }
+  /** Saves bytes produced by the webview (e.g. a PNG) via a save dialog. */
+  | { type: 'saveFile'; requestId: number; suggestedName: string; data: Uint8Array; filterName: string; extensions: string[] }
+  /** Writes a converted .dds next to its source image (asking before replacing unless `overwrite`). */
+  | { type: 'writeConverted'; requestId: number; sourceUri: string; data: Uint8Array; overwrite: boolean; format: string }
+  /** Clothing pack editor: replaces the project with an edited one. */
+  | { type: 'packEdit'; pack: import('../formats/clothPack').ClothPack }
+  /** Picks models to add as drawables (slot/gender guessed from names; `gender` when it can't be). */
+  | { type: 'packAddDrawables'; requestId: number; gender: import('../formats/clothPack').Gender }
+  /** Picks files and replies with their project-relative paths. */
+  | { type: 'packPickFiles'; requestId: number; purpose: 'textures' | 'cloth' | 'model' }
+  | { type: 'packLoadModel'; requestId: number; path: string; maxTextureSize?: number }
+  | { type: 'packLoadTexture'; requestId: number; path: string; maxSize?: number }
+  | { type: 'packCheck'; requestId: number }
+  | { type: 'packFindDuplicates'; requestId: number }
+  /** Saves generated data (e.g. a converted replacement image) next to the project; replies packPicked. */
+  | { type: 'packSaveAsset'; requestId: number; name: string; data: Uint8Array }
+  | { type: 'packBuild'; requestId: number }
+  | { type: 'packOptimize' }
+  | { type: 'packReveal' }
+  /** Applies optimisation plans (see formats/optimize.ts) to .ytd files. */
+  | { type: 'applyOptimization'; files: { uri: string; plans: import('../formats/optimize').TexturePlan[] }[] };
