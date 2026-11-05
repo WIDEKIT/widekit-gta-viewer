@@ -14,6 +14,12 @@ export class Viewer {
   readonly content = new THREE.Group();
   /** Helpers (bounds, portals, selection) that are excluded from framing. */
   readonly overlay = new THREE.Group();
+  /** Bright neutral studio for browser vehicle previews. */
+  private readonly studio = new THREE.Group();
+  private readonly studioFloor: THREE.Mesh;
+  private readonly studioBack: THREE.Mesh;
+  private readonly studioLeft: THREE.Mesh;
+  private readonly studioRight: THREE.Mesh;
   private readonly grid: THREE.GridHelper;
   private readonly axes: THREE.AxesHelper;
   private readonly resizeObserver: ResizeObserver;
@@ -43,14 +49,22 @@ export class Viewer {
     this.controls.addEventListener('change', () => this.requestRender());
     this.controls.addEventListener('start', () => (this.userMoved = true));
 
-    const hemi = new THREE.HemisphereLight(0xffffff, 0x60646c, 1.6);
-    const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x60646c, 1.9);
+    const sun = new THREE.DirectionalLight(0xffffff, 2.2);
     sun.position.set(0.4, -0.6, 1);
     // A light that follows the camera keeps every face readable.
-    const head = new THREE.DirectionalLight(0xffffff, 0.8);
+    const head = new THREE.DirectionalLight(0xffffff, 1.2);
     head.position.set(0, 0, 1);
     this.camera.add(head);
-    this.scene.add(hemi, sun, this.camera, this.content, this.overlay);
+    const studioMaterial = new THREE.MeshStandardMaterial({ color: 0xe8edf2, metalness: 0.58, roughness: 0.22, side: THREE.DoubleSide });
+    const wallMaterial = new THREE.MeshStandardMaterial({ color: 0xd5dce5, metalness: 0.42, roughness: 0.3, side: THREE.DoubleSide });
+    this.studioFloor = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), studioMaterial);
+    this.studioBack = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), wallMaterial);
+    this.studioLeft = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), wallMaterial.clone());
+    this.studioRight = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), wallMaterial.clone());
+    this.studio.add(this.studioFloor, this.studioBack, this.studioLeft, this.studioRight);
+    this.studio.visible = document.body.dataset.widekitStudio === 'true';
+    this.scene.add(hemi, sun, this.camera, this.studio, this.content, this.overlay);
 
     this.grid = new THREE.GridHelper(20, 20, 0x888888, 0x555555);
     this.grid.rotation.x = Math.PI / 2;
@@ -70,12 +84,20 @@ export class Viewer {
   }
 
   applyTheme(): void {
+    if (document.body.dataset.widekitStudio === 'true') {
+      this.scene.background = new THREE.Color(0xe8edf3);
+      this.grid.visible = false;
+      this.axes.visible = false;
+      this.requestRender();
+      return;
+    }
     const bg = getComputedStyle(document.body).getPropertyValue('--vscode-editor-background').trim() || '#1e1e1e';
     this.scene.background = new THREE.Color(bg);
     this.requestRender();
   }
 
   setGridVisible(v: boolean): void {
+    if (document.body.dataset.widekitStudio === 'true') return;
     this.grid.visible = v;
     this.axes.visible = v;
     this.requestRender();
@@ -146,7 +168,25 @@ export class Viewer {
     this.grid.scale.set(step, 1, step);
     this.grid.position.set(center.x, center.y, b.min.z);
     this.axes.scale.setScalar(Math.max(extent * 0.15, 0.1));
+    if (this.studio.visible && !box) this.layoutStudio(b, Math.max(extent, size.z, 1));
     this.requestRender();
+  }
+
+  private layoutStudio(box: THREE.Box3, extent: number): void {
+    const center = box.getCenter(new THREE.Vector3());
+    const size = extent * 5;
+    const floorZ = box.min.z - Math.max(extent * 0.025, 0.015);
+    this.studioFloor.position.set(center.x, center.y, floorZ);
+    this.studioFloor.scale.set(size, size, 1);
+    this.studioBack.position.set(center.x, center.y + size * 0.28, floorZ + size * 0.34);
+    this.studioBack.rotation.set(Math.PI / 2, 0, 0);
+    this.studioBack.scale.set(size, size * 0.68, 1);
+    this.studioLeft.position.set(center.x - size * 0.35, center.y, floorZ + size * 0.34);
+    this.studioLeft.rotation.set(Math.PI / 2, 0, Math.PI / 2);
+    this.studioLeft.scale.set(size, size * 0.68, 1);
+    this.studioRight.position.set(center.x + size * 0.35, center.y, floorZ + size * 0.34);
+    this.studioRight.rotation.set(Math.PI / 2, 0, Math.PI / 2);
+    this.studioRight.scale.set(size, size * 0.68, 1);
   }
 
   /** Returns the first content object under the given client coordinates. */
