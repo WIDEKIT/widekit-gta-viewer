@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { DrawableData, LodLevel, ShaderData, TextureData } from '../../shared/model';
+import type { DrawableData, FragmentChildData, LodLevel, ShaderData, TextureData } from '../../shared/model';
 import { LOD_LEVELS } from '../../shared/model';
 import {
   applyRenderOptions,
@@ -18,6 +18,15 @@ import { Viewer } from '../viewer';
 import { LiveryEditor } from '../liveryEditor';
 
 const LOD_LABELS: Record<LodLevel, string> = { high: 'High', med: 'Medium', low: 'Low', vlow: 'Very low' };
+
+/** GTA skeleton tags used by vehicle fragment wheels. */
+function wheelSlot(tag: number): 'lf' | 'rf' | 'lr' | 'rr' | undefined {
+  if (tag === 27922) return 'lf'; // wheel_lf
+  if (tag === 26418) return 'rf'; // wheel_rf
+  if (tag === 27902 || tag === 29921 || tag === 29922 || tag === 29923) return 'lr';
+  if (tag === 26398 || tag === 5857 || tag === 5858 || tag === 5859) return 'rr';
+  return undefined;
+}
 
 /** Shared render toggles for every 3D view in this editor. */
 export function renderOptions(): RenderOptions {
@@ -236,7 +245,9 @@ export class ModelPanel {
     }
     this.lod = availableLod(d, this.lod);
     this.store.unbindAll();
-    this.viewer.setContent(buildDrawable(this.livery.apply(this.withVariation(d)), this.lod, this.store, this.opts));
+    const content = buildDrawable(this.livery.apply(this.withVariation(d)), this.lod, this.store, this.opts);
+    this.addWheelChildren(content, d.fragmentChildren ?? []);
+    this.viewer.setContent(content);
     this.bounds = boxHelper(d.bbMin, d.bbMax, 0xffc107);
     this.bounds.visible = pref('bounds', false);
     this.viewer.overlay.add(this.bounds);
@@ -278,6 +289,32 @@ export class ModelPanel {
     const isVariation = (s: ShaderData) => !!s.diffuse && /_diff_\d{3}/.test(s.diffuse);
     const targets = d.shaders.some(isVariation) ? isVariation : (s: ShaderData) => !!s.diffuse;
     return { ...d, shaders: d.shaders.map((s) => (targets(s) ? { ...s, diffuse: key, diffuseIsOverlay: false } : s)) };
+  }
+
+  /**
+   * Vehicle wheels are fragment physics children rather than meshes in the
+   * main drawable.  Put every wheel at its authored transform.  Some GTA
+   * vehicles only store one drawable per axle, so reuse that detailed wheel
+   * mesh for data-only slots while preserving each slot's own transform.
+   */
+  private addWheelChildren(root: THREE.Group, children: FragmentChildData[]): void {
+    const slots = new Map<string, FragmentChildData>();
+    for (const child of children) {
+      const slot = wheelSlot(child.boneTag);
+      if (slot) slots.set(slot, child);
+    }
+    const frontSource = slots.get('lf')?.drawable ?? slots.get('rf')?.drawable;
+    const rearSource = slots.get('lr')?.drawable ?? slots.get('rr')?.drawable;
+    for (const [slot, child] of slots) {
+      const drawable = child.drawable ?? (slot === 'lf' || slot === 'rf' ? frontSource : rearSource);
+      if (!drawable) continue;
+      const lod = availableLod(drawable, 'high');
+      const wheel = buildDrawable(drawable, lod, this.store, this.opts);
+      wheel.name = `wheel_${slot}`;
+      wheel.matrixAutoUpdate = false;
+      wheel.matrix.fromArray(child.transform);
+      root.add(wheel);
+    }
   }
 
   private renderToolbar(): void {

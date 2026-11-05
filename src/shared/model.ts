@@ -98,6 +98,20 @@ export interface DrawableData {
   hasExternalTextures: boolean;
   /** Collision embedded in the drawable, if any. */
   bounds?: BoundsData;
+  /**
+   * Independently transformable pieces carried by a fragment, such as the
+   * four vehicle wheels.  They are not part of the main drawable's LOD list.
+   */
+  fragmentChildren?: FragmentChildData[];
+}
+
+export interface FragmentChildData {
+  /** GTA skeleton tag of the fragment child (wheel_lf, wheel_rr, ...). */
+  boneTag: number;
+  /** Child-to-fragment transform, column-major 4x4. */
+  transform: number[];
+  /** Some physics children are data-only; renderable children carry a drawable. */
+  drawable?: DrawableData;
 }
 
 // ---------------------------------------------------------------------------
