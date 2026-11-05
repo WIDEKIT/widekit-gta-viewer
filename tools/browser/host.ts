@@ -16,6 +16,7 @@ const state: Record<string, unknown> = {};
 let manifest: SourceManifest | undefined;
 let ready = false;
 let loading = false;
+const queuedCommands: { command: string; value?: unknown; target?: unknown }[] = [];
 const sourceCache = new Map<string, Uint8Array>();
 
 const showStatus = (message: string, error = false) => {
@@ -47,6 +48,10 @@ async function loadModel() {
   try {
     const drawables = parseYft(await bytes(model), { maxSize: 1024 });
     send({ type: 'drawables', file: model.name, kind: 'fragment', drawables });
+    while (queuedCommands.length) {
+      const command = queuedCommands.shift()!;
+      window.postMessage({ type: 'widekit-viewer-command', ...command }, window.location.origin);
+    }
     hideStatus();
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to load this vehicle preview.';
@@ -93,8 +98,15 @@ window.acquireVsCodeApi = () => ({
   setState: (next) => Object.assign(state, next),
 });
 
-window.addEventListener('message', (event: MessageEvent<{ type?: string; manifest?: SourceManifest }>) => {
-  if (event.origin !== window.location.origin || event.source !== window.parent || event.data?.type !== 'widekit-source-manifest') return;
+window.addEventListener('message', (event: MessageEvent<{ type?: string; manifest?: SourceManifest; command?: string; value?: unknown; target?: unknown }>) => {
+  if (event.origin !== window.location.origin || event.source !== window.parent) return;
+  if (event.data?.type === 'widekit-viewer-command' && typeof event.data.command === 'string') {
+    const command = { command: event.data.command, value: event.data.value, target: event.data.target };
+    if (loading || !ready) queuedCommands.push(command);
+    else window.postMessage({ type: 'widekit-viewer-command', ...command }, window.location.origin);
+    return;
+  }
+  if (event.data?.type !== 'widekit-source-manifest') return;
   const next = event.data.manifest;
   if (!next?.assetId || !Array.isArray(next.files) || !next.files.every((file) => file && typeof file.name === 'string' && typeof file.url === 'string' && (file.kind === 'yft' || file.kind === 'ytd'))) {
     showStatus('Invalid private preview source.', true);

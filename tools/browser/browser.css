@@ -7,3 +7,6 @@ body { margin: 0; background: #070b11; }
 .sidebar { display: none !important; }
 .model-body { grid-template-columns: minmax(0, 1fr) !important; }
 .livery-editor, .lightbox-actions, .ytd-actions { display: none !important; }
+/* WideKit supplies the public controls outside the frame. Keep technical editor UI out of the showroom. */
+.toolbar, .status { display: none !important; }
+.model-panel, .model-body, .stage { height: 100% !important; min-height: 100% !important; }

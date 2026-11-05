@@ -81,6 +81,13 @@ export class Viewer {
     this.requestRender();
   }
 
+  /** Enables the gentle showroom orbit used by the public preview. */
+  setAutoRotate(enabled: boolean): void {
+    this.controls.autoRotate = enabled;
+    this.controls.autoRotateSpeed = 1.15;
+    this.requestRender();
+  }
+
   /** Hides everything above height `z` (useful for looking into interiors); null disables. */
   setCutHeight(z: number | null): void {
     if (z === null) {

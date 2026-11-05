@@ -81,5 +81,21 @@ onHostMessage((m: HostToWebview) => {
   }
 });
 
+window.addEventListener('message', (event: MessageEvent<{ type?: string; command?: string; value?: unknown; target?: unknown }>) => {
+  const message = event.data;
+  if (message?.type !== 'widekit-viewer-command' || !modelPanel) return;
+  switch (message.command) {
+    case 'frame':
+      modelPanel.frame();
+      break;
+    case 'auto-rotate':
+      modelPanel.setAutoRotate(Boolean(message.value));
+      break;
+    case 'paint':
+      if (typeof message.value === 'string') modelPanel.setPaint(message.value, message.target === 'secondary' ? 'secondary' : 'primary');
+      break;
+  }
+});
+
 show(h('div', { class: 'loading' }, 'Loading…'));
 vscode.postMessage({ type: 'ready' });

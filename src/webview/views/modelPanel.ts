@@ -156,6 +156,25 @@ export class ModelPanel {
     this.status.hidden = !text;
   }
 
+  /** Public, read-only preview controls used by the WideKit browser shell. */
+  frame(): void {
+    this.viewer.frame();
+  }
+
+  setAutoRotate(enabled: boolean): void {
+    this.viewer.setAutoRotate(enabled);
+  }
+
+  setPaint(colour: string, target: 'primary' | 'secondary' = 'primary'): void {
+    if (!/^#[0-9a-f]{6}$/i.test(colour)) return;
+    const value = new THREE.Color(colour).getHex();
+    const shader = target === 'secondary' ? 'vehicle_paint4' : 'vehicle_paint1';
+    this.store.setPaint(shader, value);
+    // Some assets expose only paint1; keep the visible paint coherent in that case.
+    if (target === 'primary') this.store.setPaint('vehicle_paint2', value);
+    this.viewer.requestRender();
+  }
+
   dispose(): void {
     this.offStore();
     this.livery.dispose();
