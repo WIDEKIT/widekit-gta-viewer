@@ -316,7 +316,14 @@ export class ModelPanel {
       : source;
     const template = buildDrawable(drawable, availableLod(drawable, 'high'), this.store, this.opts);
     template.traverse((node) => {
-      if ((node as THREE.Mesh).isMesh) (node as THREE.Mesh).frustumCulled = false;
+      if ((node as THREE.Mesh).isMesh) {
+        const mesh = node as THREE.Mesh;
+        mesh.frustumCulled = false;
+        // A reflected right-side wheel reverses face winding. Render both
+        // sides so its authored normals and spokes remain visible.
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        materials.forEach((material) => { material.side = THREE.DoubleSide; });
+      }
     });
 
     for (const slot of ['lf', 'rf', 'lr', 'rr'] as const) {
@@ -328,6 +335,12 @@ export class ModelPanel {
       // The mesh is local to the source wheel. Each physics child supplies
       // the exact world placement for its own corner of the vehicle.
       wheel.matrix.fromArray(fragmentMatrix(child.transform));
+      if (slot === 'rf' || slot === 'rr') {
+        // GTA stores the detailed wheel on the left side. Reflect its local
+        // geometry for the two right-hand sockets instead of showing it
+        // inside-out/backwards.
+        wheel.matrix.multiply(new THREE.Matrix4().makeScale(-1, 1, 1));
+      }
       wheel.matrixWorldNeedsUpdate = true;
       root.add(wheel);
     }
