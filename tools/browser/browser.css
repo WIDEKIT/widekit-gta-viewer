@@ -1,0 +1,9 @@
+html, body, #app { width: 100%; height: 100%; min-height: 100%; overflow: hidden; }
+body { margin: 0; background: #070b11; }
+#wk-browser-status { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 2rem; background: #070b11; color: #dceaff; font: 700 12px/1.5 system-ui, sans-serif; letter-spacing: .05em; text-align: center; }
+#wk-browser-status.is-error { color: #ffb4a2; }
+#wk-browser-status[hidden] { display: none; }
+/* The web edition is a read-only product preview: no texture/livery editing UI. */
+.sidebar { display: none !important; }
+.model-body { grid-template-columns: minmax(0, 1fr) !important; }
+.livery-editor, .lightbox-actions, .ytd-actions { display: none !important; }

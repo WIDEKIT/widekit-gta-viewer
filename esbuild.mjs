@@ -60,6 +60,16 @@ const builds = toolsOnly
         entryPoints: { webview: 'src/webview/styles.css' },
         outdir: 'dist',
       },
+      // Read-only browser adapter used by WideKit. It deliberately contains no
+      // filesystem or editing bridge; it only parses signed GTA asset responses.
+      {
+        ...common,
+        entryPoints: { 'browser-host': 'tools/browser/host.ts' },
+        outdir: 'dist',
+        platform: 'browser',
+        format: 'iife',
+        target: 'es2022',
+      },
     ];
 
 if (watch) {
