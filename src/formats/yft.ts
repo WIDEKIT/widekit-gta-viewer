@@ -76,24 +76,25 @@ function readPhysicsChildren(r: ResourceReader, opts: DrawableOptions): Fragment
     const lod = r.ptr(physicsGroup + 0x10);
     if (!r.isValid(lod)) return [];
 
-    const childPtr = r.ptr(lod + 0xd0);
+    const childrenPtr = r.ptr(lod + 0xd0);
     const transformsPtr = r.ptr(lod + 0x100);
     const count = r.u8(lod + 0x11d);
-    if (!r.isValid(childPtr) || !r.isValid(transformsPtr) || count === 0 || count > 128) return [];
+    if (!r.isValid(childrenPtr) || count === 0 || count > 128) return [];
 
     const position = r.vec3(lod + 0x30);
-    const transformCount = r.u32(transformsPtr + 0x10);
+    const transformCount = r.isValid(transformsPtr) ? r.u32(transformsPtr + 0x10) : 0;
     const transformData = transformsPtr + 0x20;
-    if (transformCount === 0 || transformCount > 256 || !r.isValid(transformData)) return [];
 
     const children: FragmentChildData[] = [];
     for (let i = 0; i < count; i++) {
-      const child = childPtr + i * 0xb0;
-      const transformIndex = r.u16(child + 0x10);
+      // This is an array of child pointers, not a packed child structure.
+      const child = r.ptr(childrenPtr + i * 8);
+      if (!r.isValid(child)) continue;
       const boneTag = r.u16(child + 0x12);
       const drawablePtr = r.ptr(child + 0xa0);
-      if (transformIndex >= transformCount) continue;
-      const transform = d3dMatrix(r, transformData + transformIndex * 64);
+      const transform = i < transformCount && r.isValid(transformData + i * 64)
+        ? d3dMatrix(r, transformData + i * 64)
+        : identityMatrix();
       transform[12] += position[0];
       transform[13] += position[1];
       transform[14] += position[2];
@@ -113,6 +114,10 @@ function readPhysicsChildren(r: ResourceReader, opts: DrawableOptions): Fragment
     // render their main drawable normally.
     return [];
   }
+}
+
+function identityMatrix(): number[] {
+  return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 }
 
 /** Converts a Direct3D row-major matrix to the column-major renderer format. */

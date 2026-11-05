@@ -28,6 +28,8 @@ function wheelSlot(tag: number): 'lf' | 'rf' | 'lr' | 'rr' | undefined {
   return undefined;
 }
 
+type WheelSlot = Exclude<ReturnType<typeof wheelSlot>, undefined>;
+
 /** Shared render toggles for every 3D view in this editor. */
 export function renderOptions(): RenderOptions {
   return {
@@ -298,7 +300,7 @@ export class ModelPanel {
    * mesh for data-only slots while preserving each slot's own transform.
    */
   private addWheelChildren(root: THREE.Group, children: FragmentChildData[]): void {
-    const slots = new Map<string, FragmentChildData>();
+    const slots = new Map<WheelSlot, FragmentChildData>();
     for (const child of children) {
       const slot = wheelSlot(child.boneTag);
       if (slot) slots.set(slot, child);
@@ -312,7 +314,7 @@ export class ModelPanel {
       const wheel = buildDrawable(drawable, lod, this.store, this.opts);
       wheel.name = `wheel_${slot}`;
       wheel.matrixAutoUpdate = false;
-      wheel.matrix.fromArray(child.transform);
+      wheel.matrix.fromArray(wheelMatrix(child.transform, slot));
       root.add(wheel);
     }
   }
@@ -486,6 +488,12 @@ export class ModelPanel {
 
     this.sidebarRest.replaceChildren(...[info, shaders, gallery, bones].filter((x): x is HTMLElement => !!x));
   }
+}
+
+/** GTA authors wheel meshes for the left side; right wheels are mirrored. */
+function wheelMatrix(transform: number[], slot: WheelSlot): number[] {
+  if (slot !== 'rf' && slot !== 'rr') return transform;
+  return [-1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, 0, transform[12], transform[13], transform[14], 1];
 }
 
 function section(title: string, open: boolean, ...content: (Node | Node[] | null)[]): HTMLElement {
