@@ -248,7 +248,7 @@ export class ModelPanel {
     this.lod = availableLod(d, this.lod);
     this.store.unbindAll();
     const content = buildDrawable(this.livery.apply(this.withVariation(d)), this.lod, this.store, this.opts);
-    this.addWheelChildren(content, d.fragmentChildren ?? []);
+    this.addWheelChildren(content, d, d.fragmentChildren ?? []);
     this.viewer.setContent(content);
     this.bounds = boxHelper(d.bbMin, d.bbMax, 0xffc107);
     this.bounds.visible = pref('bounds', false);
@@ -299,7 +299,7 @@ export class ModelPanel {
    * vehicles only store one drawable per axle, so reuse that detailed wheel
    * mesh for data-only slots while preserving each slot's own transform.
    */
-  private addWheelChildren(root: THREE.Group, children: FragmentChildData[]): void {
+  private addWheelChildren(root: THREE.Group, vehicle: DrawableData, children: FragmentChildData[]): void {
     const slots = new Map<WheelSlot, FragmentChildData>();
     for (const child of children) {
       const slot = wheelSlot(child.boneTag);
@@ -307,14 +307,29 @@ export class ModelPanel {
     }
     const frontSource = slots.get('lf')?.drawable ?? slots.get('rf')?.drawable;
     const rearSource = slots.get('lr')?.drawable ?? slots.get('rr')?.drawable;
+    const bonePosition = (slot: WheelSlot): THREE.Vector3 | undefined => {
+      const child = slots.get(slot);
+      const bone = child && vehicle.bones.find((candidate) => candidate.tag === child.boneTag);
+      return bone ? new THREE.Vector3(bone.world[12], bone.world[13], bone.world[14]) : undefined;
+    };
+    const frontOrigin = bonePosition(slots.has('lf') ? 'lf' : 'rf');
+    const rearOrigin = bonePosition(slots.has('lr') ? 'lr' : 'rr');
     for (const [slot, child] of slots) {
-      const drawable = child.drawable ?? (slot === 'lf' || slot === 'rf' ? frontSource : rearSource);
+      const drawable = child.drawable ?? (slot === 'lf' || slot === 'rf' ? frontSource : (rearSource ?? frontSource));
       if (!drawable) continue;
       const lod = availableLod(drawable, 'high');
       const wheel = buildDrawable(drawable, lod, this.store, this.opts);
       wheel.name = `wheel_${slot}`;
       wheel.matrixAutoUpdate = false;
-      wheel.matrix.fromArray(wheelMatrix(child.transform, slot));
+      // GTA's wheel child geometry is already authored in vehicle space.  The
+      // physics transform is for the simulation body, not the render mesh.
+      // Place a source wheel from the vehicle skeleton instead; this keeps the
+      // original left wheel intact and produces exact mirrored/rear copies.
+      const sourcePosition = slot === 'lf' || slot === 'rf' ? frontOrigin : (rearOrigin ?? frontOrigin);
+      const targetPosition = bonePosition(slot);
+      wheel.matrix.fromArray(sourcePosition && targetPosition
+        ? wheelMatrix(sourcePosition, targetPosition, slot)
+        : identityMatrix());
       root.add(wheel);
     }
   }
@@ -491,9 +506,21 @@ export class ModelPanel {
 }
 
 /** GTA authors wheel meshes for the left side; right wheels are mirrored. */
-function wheelMatrix(transform: number[], slot: WheelSlot): number[] {
-  if (slot !== 'rf' && slot !== 'rr') return transform;
-  return [-1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1, 0, transform[12], transform[13], transform[14], 1];
+function identityMatrix(): number[] {
+  return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+}
+
+function wheelMatrix(source: THREE.Vector3, target: THREE.Vector3, slot: WheelSlot): number[] {
+  const right = slot === 'rf' || slot === 'rr';
+  return [
+    right ? -1 : 1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    right ? target.x + source.x : target.x - source.x,
+    target.y - source.y,
+    target.z - source.z,
+    1,
+  ];
 }
 
 function section(title: string, open: boolean, ...content: (Node | Node[] | null)[]): HTMLElement {
