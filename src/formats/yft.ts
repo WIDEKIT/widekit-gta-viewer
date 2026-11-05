@@ -120,13 +120,10 @@ function identityMatrix(): number[] {
   return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 }
 
-/** Converts a Direct3D row-major matrix to the column-major renderer format. */
+/**
+ * RAGE stores Direct3D row-major matrices. Those sixteen values have exactly
+ * the order Three.js expects for the transposed, column-major transform.
+ */
 function d3dMatrix(r: ResourceReader, ptr: number): number[] {
-  const raw = Array.from({ length: 16 }, (_, i) => r.f32(ptr + i * 4));
-  return [
-    raw[0], raw[4], raw[8], raw[12],
-    raw[1], raw[5], raw[9], raw[13],
-    raw[2], raw[6], raw[10], raw[14],
-    raw[3], raw[7], raw[11], raw[15],
-  ];
+  return Array.from({ length: 16 }, (_, i) => r.f32(ptr + i * 4));
 }
