@@ -32,7 +32,7 @@ type WheelSlot = Exclude<ReturnType<typeof wheelSlot>, undefined>;
 
 /** Named vehicle pieces exposed by the read-only WideKit showroom controls. */
 type VehiclePart = 'bonnet' | 'boot' | 'driver_front' | 'passenger_front' | 'driver_rear' | 'passenger_rear';
-type VehicleLight = 'headlights' | 'tail_lights' | 'indicators' | 'reverse_lights';
+type VehicleLight = 'headlights' | 'tail_lights' | 'indicators' | 'reverse_lights' | 'brake_lights' | 'extra_lights';
 
 const VEHICLE_PART_BONES: Record<VehiclePart, readonly string[]> = {
   bonnet: ['bonnet', 'hood'],
@@ -46,10 +46,9 @@ const VEHICLE_PART_BONES: Record<VehiclePart, readonly string[]> = {
 type VehiclePartBone = { boneIndices: ReadonlySet<number>; pivot: THREE.Vector3; side: number };
 
 type VehicleLightBinding = {
+  overlay: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
   material: THREE.MeshStandardMaterial;
-  emissive: THREE.Color;
-  emissiveIntensity: number;
-  emissiveMap: THREE.Texture | null;
+  source: THREE.MeshStandardMaterial;
 };
 
 type VehicleSkinBinding = {
@@ -67,18 +66,30 @@ function isVehiclePart(value: string): value is VehiclePart {
 }
 
 function isVehicleLight(value: string): value is VehicleLight {
-  return value === 'headlights' || value === 'tail_lights' || value === 'indicators' || value === 'reverse_lights';
+  return value === 'headlights' || value === 'tail_lights' || value === 'indicators' || value === 'reverse_lights' || value === 'brake_lights' || value === 'extra_lights';
 }
 
 function vehicleLightKind(signature: string, isFront: boolean): VehicleLight | undefined {
   if (/(indicator|turn|signal|blink|direction|hazard)/.test(signature)) return 'indicators';
   if (/(reverse|back[_ -]?(up|light)|backup)/.test(signature)) return 'reverse_lights';
-  if (/(tail|brake|stop|rear[_ -]?(light|lamp)|(?:light|lamp)[_ -]?rear)/.test(signature)) return 'tail_lights';
+  if (/(brake|stop)/.test(signature)) return 'brake_lights';
+  if (/(extra|siren|emergency)/.test(signature)) return 'extra_lights';
+  if (/(tail|rear[_ -]?(light|lamp)|(?:light|lamp)[_ -]?rear)/.test(signature)) return 'tail_lights';
   if (/(head|front[_ -]?(light|lamp)|(?:light|lamp)[_ -]?front|lowbeam|highbeam|fog)/.test(signature)) return 'headlights';
   // "vehicle_lights" is GTA's generic authored lamp shader. The mesh's Y
   // position is the reliable data available when it has no semantic name.
   return isFront ? 'headlights' : 'tail_lights';
 }
+
+/** GTA vehicle_lightsemissive stores the authored lamp state in vertex alpha. */
+const GTA_LIGHT_STATE: Readonly<Record<number, VehicleLight>> = {
+  1: 'headlights', 2: 'headlights',
+  3: 'tail_lights', 4: 'tail_lights',
+  5: 'indicators', 6: 'indicators', 7: 'indicators', 8: 'indicators',
+  9: 'brake_lights', 10: 'brake_lights', 11: 'brake_lights',
+  12: 'reverse_lights', 13: 'reverse_lights',
+  14: 'extra_lights', 15: 'extra_lights',
+};
 
 /** Shared render toggles for every 3D view in this editor. */
 export function renderOptions(): RenderOptions {
@@ -182,6 +193,7 @@ export class ModelPanel {
     this.viewer.setGridVisible(pref('grid', true));
     this.store.showTextures = this.opts.textures;
     this.offStore = this.store.onChange(() => {
+      this.refreshVehicleLightMaps();
       this.viewer.requestRender();
       this.queueSidebar();
     });
@@ -306,21 +318,17 @@ export class ModelPanel {
     return [...this.vehicleLights].filter(([, bindings]) => bindings.length > 0).map(([light]) => light);
   }
 
-  /** Enables an authored lamp by boosting its own original emission/texture. */
+  /** Enables an authored lamp without touching the vehicle's default lens material. */
   setVehicleLight(light: string, enabled: boolean): void {
     if (!isVehicleLight(light)) return;
     const bindings = this.vehicleLights.get(light);
     if (!bindings?.length) return;
     for (const binding of bindings) {
-      // Never replace the authored diffuse colour: an active lamp is the
-      // original lens/texture rendered more brightly, not a painted overlay.
-      binding.material.emissive.copy(binding.emissive);
-      binding.material.emissiveMap = binding.emissiveMap ?? binding.material.map;
-      if (binding.material.emissive.r === 0 && binding.material.emissive.g === 0 && binding.material.emissive.b === 0) {
-        binding.material.emissive.set(0xffffff);
-      }
-      binding.material.emissiveIntensity = enabled ? binding.emissiveIntensity * 2.5 : 0;
+      // The overlay samples the authored lamp texture. Keeping it hidden when
+      // off leaves GTA's original lens colour, transparency and material intact.
+      binding.material.emissiveMap = binding.source.map;
       binding.material.needsUpdate = true;
+      binding.overlay.visible = enabled;
     }
     this.viewer.requestRender();
   }
@@ -409,9 +417,55 @@ export class ModelPanel {
     this.applyVehiclePartTransforms();
   }
 
+  /** Creates a glowing overlay for one GTA external-light state. */
+  private addVehicleLightOverlay(source: THREE.Mesh, original: THREE.MeshStandardMaterial, stateId?: number): VehicleLightBinding {
+    const material = original.clone();
+    material.userData = { ...original.userData, widekitLightOverlay: true };
+    // Add only the authored lamp texture over the untouched base lens.
+    material.color.set(0x000000);
+    material.map = null;
+    material.emissive.set(0xffffff);
+    material.emissiveMap = original.map;
+    material.emissiveIntensity = 2.5;
+    material.transparent = true;
+    material.depthWrite = false;
+    material.blending = THREE.AdditiveBlending;
+    if (stateId !== undefined) {
+      material.vertexColors = true;
+      const stateAlpha = (stateId / 255).toFixed(8);
+      material.onBeforeCompile = (shader) => {
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <color_fragment>',
+          `#ifdef USE_COLOR\n  diffuseColor.rgb *= vColor.rgb;\n#endif\nif (abs(vColor.a - ${stateAlpha}) > 0.00196) discard;`
+        );
+      };
+    }
+    material.needsUpdate = true;
+    const overlay = new THREE.Mesh(source.geometry, material);
+    overlay.name = `widekit-light-overlay-${stateId ?? 'semantic'}`;
+    overlay.visible = false;
+    overlay.frustumCulled = false;
+    overlay.renderOrder = source.renderOrder + 1;
+    overlay.userData.widekitLightOverlay = true;
+    source.add(overlay);
+    return { overlay, material, source: original };
+  }
+
+  /** Keeps overlays in sync when a referenced YTD texture arrives asynchronously. */
+  private refreshVehicleLightMaps(): void {
+    for (const bindings of this.vehicleLights.values()) {
+      for (const binding of bindings) {
+        if (binding.material.emissiveMap !== binding.source.map) {
+          binding.material.emissiveMap = binding.source.map;
+          binding.material.needsUpdate = true;
+        }
+      }
+    }
+  }
+
   /**
-   * Derives controllable lights from YFT shader/texture names. Generic GTA
-   * vehicle-light shaders are split by their authored position (front/rear).
+   * Derives controllable lights from the real GTA external-state IDs in vertex
+   * alpha. Shader-name inference remains only as a fallback for unusual YFTs.
    */
   private bindVehicleLights(root: THREE.Group, vehicle: DrawableData): void {
     this.vehicleLights.clear();
@@ -420,6 +474,7 @@ export class ModelPanel {
     const vehicleCentreY = vehicleBox.getCenter(new THREE.Vector3()).y;
     root.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) return;
+      if (object.userData.widekitLightOverlay) return;
       const original = object.material;
       if (!(original instanceof THREE.MeshStandardMaterial)) return;
       const shader = vehicle.shaders[Number(original.userData.shaderIndex)];
@@ -428,29 +483,28 @@ export class ModelPanel {
         .join(' ')
         .toLowerCase();
       if (!/(light|lamp|emissive|brake|reverse|indicator|signal|turn)/.test(signature)) return;
+      const colours = object.geometry.getAttribute('color');
+      const alphaValues = colours instanceof THREE.BufferAttribute && colours.itemSize >= 4
+        ? new Set(Array.from(colours.array as ArrayLike<number>).filter((_, index) => index % colours.itemSize === 3))
+        : new Set<number>();
+      let foundState = false;
+      for (const stateId of alphaValues) {
+        const light = GTA_LIGHT_STATE[stateId];
+        if (!light) continue;
+        foundState = true;
+        const bindings = this.vehicleLights.get(light) ?? [];
+        bindings.push(this.addVehicleLightOverlay(object, original, stateId));
+        this.vehicleLights.set(light, bindings);
+      }
+      if (foundState) return;
       const bounds = new THREE.Box3().setFromObject(object);
       const light = vehicleLightKind(signature, bounds.getCenter(new THREE.Vector3()).y >= vehicleCentreY);
       if (!light) return;
-      // Shared GTA materials can contain separate lamps. Clone per mesh so a
-      // headlight toggle never changes an unrelated rear or indicator mesh.
-      const material = original.clone();
-      material.userData = { ...original.userData };
-      // Default state is physically off. Keep the original diffuse/lens data
-      // untouched and only zero its self illumination until the user enables it.
-      const originalEmission = material.emissive.clone();
-      const originalIntensity = material.emissiveIntensity;
-      const originalEmissionMap = material.emissiveMap;
-      material.emissiveIntensity = 0;
-      object.material = material;
       const bindings = this.vehicleLights.get(light) ?? [];
-      bindings.push({
-        material,
-        emissive: originalEmission,
-        emissiveIntensity: Math.max(originalIntensity, 1),
-        emissiveMap: originalEmissionMap,
-      });
+      bindings.push(this.addVehicleLightOverlay(object, original));
       this.vehicleLights.set(light, bindings);
     });
+    this.refreshVehicleLightMaps();
   }
 
   /** Interpolates part poses with a short eased motion instead of snapping. */
