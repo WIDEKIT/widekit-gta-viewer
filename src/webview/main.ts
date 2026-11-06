@@ -34,6 +34,9 @@ onHostMessage((m: HostToWebview) => {
         show(modelPanel.el);
       }
       modelPanel.setDrawables(m.drawables, reload);
+      // The browser showroom uses this to show only lighting controls that
+      // were actually identified from this vehicle's YFT shader data.
+      window.parent?.postMessage({ type: 'widekit-viewer-lights', available: modelPanel.vehicleLightCapabilities() }, window.location.origin);
       break;
     case 'ytd':
       show(ytdView(m.file, m.textures));
@@ -99,6 +102,9 @@ window.addEventListener('message', (event: MessageEvent<{ type?: string; command
       break;
     case 'vehicle-part':
       if (typeof message.target === 'string') modelPanel.setVehiclePart(message.target, Boolean(message.value));
+      break;
+    case 'vehicle-light':
+      if (typeof message.target === 'string') modelPanel.setVehicleLight(message.target, Boolean(message.value));
       break;
   }
 });

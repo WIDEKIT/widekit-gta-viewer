@@ -32,6 +32,7 @@ type WheelSlot = Exclude<ReturnType<typeof wheelSlot>, undefined>;
 
 /** Named vehicle pieces exposed by the read-only WideKit showroom controls. */
 type VehiclePart = 'bonnet' | 'boot' | 'driver_front' | 'passenger_front' | 'driver_rear' | 'passenger_rear';
+type VehicleLight = 'headlights' | 'tail_lights' | 'indicators' | 'reverse_lights';
 
 const VEHICLE_PART_BONES: Record<VehiclePart, readonly string[]> = {
   bonnet: ['bonnet', 'hood'],
@@ -43,6 +44,13 @@ const VEHICLE_PART_BONES: Record<VehiclePart, readonly string[]> = {
 };
 
 type VehiclePartBone = { boneIndices: ReadonlySet<number>; pivot: THREE.Vector3; side: number };
+
+type VehicleLightBinding = {
+  material: THREE.MeshStandardMaterial;
+  colour: THREE.Color;
+  emissive: THREE.Color;
+  emissiveIntensity: number;
+};
 
 type VehicleSkinBinding = {
   geometry: THREE.BufferGeometry;
@@ -56,6 +64,29 @@ type VehicleSkinBinding = {
 
 function isVehiclePart(value: string): value is VehiclePart {
   return value in VEHICLE_PART_BONES;
+}
+
+function isVehicleLight(value: string): value is VehicleLight {
+  return value === 'headlights' || value === 'tail_lights' || value === 'indicators' || value === 'reverse_lights';
+}
+
+function vehicleLightKind(signature: string, isFront: boolean): VehicleLight | undefined {
+  if (/(indicator|turn|signal|blink)/.test(signature)) return 'indicators';
+  if (/(reverse|back[_ -]?up)/.test(signature)) return 'reverse_lights';
+  if (/(tail|brake|stop|rear[_ -]?light)/.test(signature)) return 'tail_lights';
+  if (/(head|front[_ -]?light|lowbeam|highbeam)/.test(signature)) return 'headlights';
+  // "vehicle_lights" is GTA's generic authored lamp shader. The mesh's Y
+  // position is the reliable data available when it has no semantic name.
+  return isFront ? 'headlights' : 'tail_lights';
+}
+
+function vehicleLightColour(light: VehicleLight): THREE.Color {
+  switch (light) {
+    case 'tail_lights': return new THREE.Color(0xff1f2d);
+    case 'indicators': return new THREE.Color(0xff9d16);
+    case 'reverse_lights': return new THREE.Color(0xeaf7ff);
+    default: return new THREE.Color(0xf3f8ff);
+  }
 }
 
 /** Shared render toggles for every 3D view in this editor. */
@@ -142,6 +173,8 @@ export class ModelPanel {
   private readonly vehiclePartProgress = new Map<VehiclePart, number>();
   private readonly vehiclePartTransitions = new Map<VehiclePart, { from: number; to: number; startedAt: number }>();
   private vehicleAnimationFrame?: number;
+  /** Individually addressable light materials inferred from authored YFT shaders. */
+  private readonly vehicleLights = new Map<VehicleLight, VehicleLightBinding[]>();
 
   constructor(private readonly options: ModelPanelOptions = {}) {
     this.toolbar = h('div', { class: 'toolbar' });
@@ -277,6 +310,26 @@ export class ModelPanel {
     this.animateVehicleParts();
   }
 
+  /** Returns only the light groups that were actually found in the active YFT. */
+  vehicleLightCapabilities(): string[] {
+    return [...this.vehicleLights].filter(([, bindings]) => bindings.length > 0).map(([light]) => light);
+  }
+
+  /** Enables or disables one authored vehicle-light group without affecting paint. */
+  setVehicleLight(light: string, enabled: boolean): void {
+    if (!isVehicleLight(light)) return;
+    const bindings = this.vehicleLights.get(light);
+    if (!bindings?.length) return;
+    const glow = vehicleLightColour(light);
+    for (const binding of bindings) {
+      binding.material.color.copy(binding.colour);
+      binding.material.emissive.copy(enabled ? glow : binding.emissive);
+      binding.material.emissiveIntensity = enabled ? 3.4 : binding.emissiveIntensity;
+      binding.material.needsUpdate = true;
+    }
+    this.viewer.requestRender();
+  }
+
   dispose(): void {
     if (this.vehicleAnimationFrame !== undefined) cancelAnimationFrame(this.vehicleAnimationFrame);
     this.offStore();
@@ -301,6 +354,7 @@ export class ModelPanel {
     this.bindVehicleParts(content, d);
     this.addWheelChildren(content, d, d.fragmentChildren ?? []);
     this.viewer.setContent(content);
+    this.bindVehicleLights(content, d);
     this.bounds = boxHelper(d.bbMin, d.bbMax, 0xffc107);
     this.bounds.visible = pref('bounds', false);
     this.viewer.overlay.add(this.bounds);
@@ -358,6 +412,44 @@ export class ModelPanel {
       });
     });
     this.applyVehiclePartTransforms();
+  }
+
+  /**
+   * Derives controllable lights from YFT shader/texture names. Generic GTA
+   * vehicle-light shaders are split by their authored position (front/rear).
+   */
+  private bindVehicleLights(root: THREE.Group, vehicle: DrawableData): void {
+    this.vehicleLights.clear();
+    root.updateMatrixWorld(true);
+    const vehicleBox = new THREE.Box3().setFromObject(root);
+    const vehicleCentreY = vehicleBox.getCenter(new THREE.Vector3()).y;
+    root.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const original = object.material;
+      if (!(original instanceof THREE.MeshStandardMaterial)) return;
+      const shader = vehicle.shaders[Number(original.userData.shaderIndex)];
+      const signature = [shader?.name, shader?.diffuse, ...(shader?.textures.map((texture) => texture.texture) ?? [])]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      if (!/(light|lamp|emissive|brake|reverse|indicator|signal|turn)/.test(signature)) return;
+      const bounds = new THREE.Box3().setFromObject(object);
+      const light = vehicleLightKind(signature, bounds.getCenter(new THREE.Vector3()).y >= vehicleCentreY);
+      if (!light) return;
+      // Shared GTA materials can contain separate lamps. Clone per mesh so a
+      // headlight toggle never changes an unrelated rear or indicator mesh.
+      const material = original.clone();
+      material.userData = { ...original.userData };
+      object.material = material;
+      const bindings = this.vehicleLights.get(light) ?? [];
+      bindings.push({
+        material,
+        colour: material.color.clone(),
+        emissive: material.emissive.clone(),
+        emissiveIntensity: material.emissiveIntensity,
+      });
+      this.vehicleLights.set(light, bindings);
+    });
   }
 
   /** Interpolates part poses with a short eased motion instead of snapping. */
