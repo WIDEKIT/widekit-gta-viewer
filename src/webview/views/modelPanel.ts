@@ -303,12 +303,12 @@ export class ModelPanel {
         break;
       case 'top':
         direction.set(0, -0.12, 1);
-        distance *= 1.45;
+        distance *= 1.72;
         break;
       case 'under':
         target.z = bounds.min.z + size.z * 0.1;
         direction.set(0, 0.08, -1);
-        distance *= 1.35;
+        distance *= 1.62;
         break;
       case 'engine':
         // Sit just outside the bonnet line, with a shallow downward angle so
@@ -323,11 +323,11 @@ export class ModelPanel {
         distance *= 0.66;
         break;
       case 'interior':
-        // Keep the camera outside the opened driver door for a readable
-        // side-on cabin view instead of clipping into the dashboard/door.
-        target.set(bounds.min.x + size.x * 0.34, center.y + size.y * 0.08, bounds.min.z + size.z * 0.52);
-        direction.set(-1, 0.16, 0.2);
-        distance *= 0.92;
+        // Frame the cabin from outside and slightly ahead of the opened
+        // driver door, looking diagonally across the seats and dashboard.
+        target.set(bounds.min.x + size.x * 0.43, center.y + size.y * 0.02, bounds.min.z + size.z * 0.48);
+        direction.set(-1, 0.38, 0.14);
+        distance *= 1.18;
         break;
     }
     this.animateCamera(target, direction.normalize(), distance);
@@ -647,7 +647,7 @@ export class ModelPanel {
     group.visible = this.cameraPresetsVisible;
     const size = bounds.getSize(new THREE.Vector3());
     const center = bounds.getCenter(new THREE.Vector3());
-    const markScale = Math.max(Math.max(size.x, size.y, size.z) * 0.045, 0.1);
+    const markScale = Math.max(Math.max(size.x, size.y, size.z) * 0.0585, 0.13);
     const points: Array<[CameraPreset, string, THREE.Vector3]> = [
       ['front', 'FRONT', new THREE.Vector3(center.x, bounds.max.y + size.y * 0.12, center.z + size.z * 0.18)],
       ['rear', 'REAR', new THREE.Vector3(center.x, bounds.min.y - size.y * 0.12, center.z + size.z * 0.18)],
