@@ -47,9 +47,9 @@ type VehiclePartBone = { boneIndices: ReadonlySet<number>; pivot: THREE.Vector3;
 
 type VehicleLightBinding = {
   material: THREE.MeshStandardMaterial;
-  colour: THREE.Color;
   emissive: THREE.Color;
   emissiveIntensity: number;
+  emissiveMap: THREE.Texture | null;
 };
 
 type VehicleSkinBinding = {
@@ -71,22 +71,13 @@ function isVehicleLight(value: string): value is VehicleLight {
 }
 
 function vehicleLightKind(signature: string, isFront: boolean): VehicleLight | undefined {
-  if (/(indicator|turn|signal|blink)/.test(signature)) return 'indicators';
-  if (/(reverse|back[_ -]?up)/.test(signature)) return 'reverse_lights';
-  if (/(tail|brake|stop|rear[_ -]?light)/.test(signature)) return 'tail_lights';
-  if (/(head|front[_ -]?light|lowbeam|highbeam)/.test(signature)) return 'headlights';
+  if (/(indicator|turn|signal|blink|direction|hazard)/.test(signature)) return 'indicators';
+  if (/(reverse|back[_ -]?(up|light)|backup)/.test(signature)) return 'reverse_lights';
+  if (/(tail|brake|stop|rear[_ -]?(light|lamp)|(?:light|lamp)[_ -]?rear)/.test(signature)) return 'tail_lights';
+  if (/(head|front[_ -]?(light|lamp)|(?:light|lamp)[_ -]?front|lowbeam|highbeam|fog)/.test(signature)) return 'headlights';
   // "vehicle_lights" is GTA's generic authored lamp shader. The mesh's Y
   // position is the reliable data available when it has no semantic name.
   return isFront ? 'headlights' : 'tail_lights';
-}
-
-function vehicleLightColour(light: VehicleLight): THREE.Color {
-  switch (light) {
-    case 'tail_lights': return new THREE.Color(0xff1f2d);
-    case 'indicators': return new THREE.Color(0xff9d16);
-    case 'reverse_lights': return new THREE.Color(0xeaf7ff);
-    default: return new THREE.Color(0xf3f8ff);
-  }
 }
 
 /** Shared render toggles for every 3D view in this editor. */
@@ -315,16 +306,20 @@ export class ModelPanel {
     return [...this.vehicleLights].filter(([, bindings]) => bindings.length > 0).map(([light]) => light);
   }
 
-  /** Enables or disables one authored vehicle-light group without affecting paint. */
+  /** Enables an authored lamp by boosting its own original emission/texture. */
   setVehicleLight(light: string, enabled: boolean): void {
     if (!isVehicleLight(light)) return;
     const bindings = this.vehicleLights.get(light);
     if (!bindings?.length) return;
-    const glow = vehicleLightColour(light);
     for (const binding of bindings) {
-      binding.material.color.copy(binding.colour);
-      binding.material.emissive.copy(enabled ? glow : binding.emissive);
-      binding.material.emissiveIntensity = enabled ? 3.4 : binding.emissiveIntensity;
+      // Never replace the authored diffuse colour: an active lamp is the
+      // original lens/texture rendered more brightly, not a painted overlay.
+      binding.material.emissive.copy(binding.emissive);
+      binding.material.emissiveMap = binding.emissiveMap ?? binding.material.map;
+      if (binding.material.emissive.r === 0 && binding.material.emissive.g === 0 && binding.material.emissive.b === 0) {
+        binding.material.emissive.set(0xffffff);
+      }
+      binding.material.emissiveIntensity = enabled ? binding.emissiveIntensity * 2.5 : 0;
       binding.material.needsUpdate = true;
     }
     this.viewer.requestRender();
@@ -440,13 +435,19 @@ export class ModelPanel {
       // headlight toggle never changes an unrelated rear or indicator mesh.
       const material = original.clone();
       material.userData = { ...original.userData };
+      // Default state is physically off. Keep the original diffuse/lens data
+      // untouched and only zero its self illumination until the user enables it.
+      const originalEmission = material.emissive.clone();
+      const originalIntensity = material.emissiveIntensity;
+      const originalEmissionMap = material.emissiveMap;
+      material.emissiveIntensity = 0;
       object.material = material;
       const bindings = this.vehicleLights.get(light) ?? [];
       bindings.push({
         material,
-        colour: material.color.clone(),
-        emissive: material.emissive.clone(),
-        emissiveIntensity: material.emissiveIntensity,
+        emissive: originalEmission,
+        emissiveIntensity: Math.max(originalIntensity, 1),
+        emissiveMap: originalEmissionMap,
       });
       this.vehicleLights.set(light, bindings);
     });
