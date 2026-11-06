@@ -345,13 +345,20 @@ export class ModelPanel {
     this.cameraPresetOpenedPart = undefined;
   }
 
-  setPaint(colour: string, target: 'primary' | 'secondary' = 'primary'): void {
+  setPaint(colour: string, target = 'vehicle_paint1'): void {
     if (!/^#[0-9a-f]{6}$/i.test(colour)) return;
     const value = new THREE.Color(colour).getHex();
-    const shader = target === 'secondary' ? 'vehicle_paint4' : 'vehicle_paint1';
+    const aliases: Record<string, string> = {
+      primary: 'vehicle_paint1',
+      secondary: 'vehicle_paint2',
+      interior: 'vehicle_paint4',
+      wheels: 'vehicle_paint5',
+      calipers: 'vehicle_paint6',
+      accent: 'vehicle_paint7',
+    };
+    const shader = aliases[target] ?? target.toLowerCase();
+    if (!/^vehicle_paint(?:1|2|4|5|6|7)$/.test(shader)) return;
     this.store.setPaint(shader, value);
-    // Some assets expose only paint1; keep the visible paint coherent in that case.
-    if (target === 'primary') this.store.setPaint('vehicle_paint2', value);
     this.viewer.requestRender();
   }
 
