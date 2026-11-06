@@ -97,6 +97,9 @@ window.addEventListener('message', (event: MessageEvent<{ type?: string; command
     case 'preview-option':
       if (typeof message.target === 'string') modelPanel.setPreviewOption(message.target, message.value);
       break;
+    case 'vehicle-part':
+      if (typeof message.target === 'string') modelPanel.setVehiclePart(message.target, Boolean(message.value));
+      break;
   }
 });
 

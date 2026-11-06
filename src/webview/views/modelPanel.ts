@@ -30,6 +30,24 @@ function wheelSlot(tag: number): 'lf' | 'rf' | 'lr' | 'rr' | undefined {
 
 type WheelSlot = Exclude<ReturnType<typeof wheelSlot>, undefined>;
 
+/** Named vehicle pieces exposed by the read-only WideKit showroom controls. */
+type VehiclePart = 'bonnet' | 'boot' | 'driver_front' | 'passenger_front' | 'driver_rear' | 'passenger_rear';
+
+const VEHICLE_PART_BONES: Record<VehiclePart, readonly string[]> = {
+  bonnet: ['bonnet', 'hood'],
+  boot: ['boot', 'trunk'],
+  driver_front: ['door_dside_f', 'door_driver_f'],
+  passenger_front: ['door_pside_f', 'door_passenger_f'],
+  driver_rear: ['door_dside_r', 'doorb1', 'door_driver_r'],
+  passenger_rear: ['door_pside_r', 'doorb2', 'door_passenger_r'],
+};
+
+type VehiclePartBinding = { group: THREE.Group; rest: THREE.Matrix4; side: number };
+
+function isVehiclePart(value: string): value is VehiclePart {
+  return value in VEHICLE_PART_BONES;
+}
+
 /** Shared render toggles for every 3D view in this editor. */
 export function renderOptions(): RenderOptions {
   return {
@@ -106,6 +124,9 @@ export class ModelPanel {
   private readonly liverySection: HTMLElement;
   private readonly sidebarRest = h('div');
   private sidebarQueued = false;
+  /** Rigid drawable groups bound to GTA door/bonnet/boot bones. */
+  private readonly vehicleParts = new Map<VehiclePart, VehiclePartBinding[]>();
+  private readonly openVehicleParts = new Set<VehiclePart>();
 
   constructor(private readonly options: ModelPanelOptions = {}) {
     this.toolbar = h('div', { class: 'toolbar' });
@@ -228,6 +249,21 @@ export class ModelPanel {
     this.viewer.requestRender();
   }
 
+  /** Opens or closes a rigid vehicle piece around the pivot provided by its GTA bone. */
+  setVehiclePart(part: string, open: boolean): void {
+    if (!isVehiclePart(part)) return;
+    const bindings = this.vehicleParts.get(part);
+    if (!bindings?.length) return;
+    if (open) this.openVehicleParts.add(part);
+    else this.openVehicleParts.delete(part);
+    const rotation = this.vehiclePartRotation(part, bindings[0].side, open);
+    for (const { group, rest } of bindings) {
+      group.matrix.copy(rest).multiply(rotation);
+      group.matrixWorldNeedsUpdate = true;
+    }
+    this.viewer.requestRender();
+  }
+
   dispose(): void {
     this.offStore();
     this.livery.dispose();
@@ -248,6 +284,7 @@ export class ModelPanel {
     this.lod = availableLod(d, this.lod);
     this.store.unbindAll();
     const content = buildDrawable(this.livery.apply(this.withVariation(d)), this.lod, this.store, this.opts);
+    this.bindVehicleParts(content, d);
     this.addWheelChildren(content, d, d.fragmentChildren ?? []);
     this.viewer.setContent(content);
     this.bounds = boxHelper(d.bbMin, d.bbMax, 0xffc107);
@@ -262,6 +299,39 @@ export class ModelPanel {
     this.livery.shown();
     this.renderToolbar();
     this.renderSidebar();
+  }
+
+  /**
+   * Captures authored rigid groups for the vehicle's moving bones. The initial
+   * matrix is kept intact, then local rotation is applied at the bone origin.
+   */
+  private bindVehicleParts(root: THREE.Group, vehicle: DrawableData): void {
+    this.vehicleParts.clear();
+    const models = vehicle.lods[this.lod];
+    for (const part of Object.keys(VEHICLE_PART_BONES) as VehiclePart[]) {
+      const names = new Set(VEHICLE_PART_BONES[part]);
+      const boneIndex = vehicle.bones.findIndex((bone) => names.has(bone.name.toLowerCase()));
+      if (boneIndex < 0) continue;
+      const side = Math.sign(Number(vehicle.bones[boneIndex].world[12])) || (part.includes('driver') ? -1 : 1);
+      const bindings: VehiclePartBinding[] = [];
+      models.forEach((model, index) => {
+        if (model.skinned || model.boneIndex !== boneIndex) return;
+        const group = root.children[index];
+        if (!(group instanceof THREE.Group)) return;
+        bindings.push({ group, rest: group.matrix.clone(), side });
+      });
+      if (bindings.length) this.vehicleParts.set(part, bindings);
+    }
+    for (const part of this.openVehicleParts) this.setVehiclePart(part, true);
+  }
+
+  private vehiclePartRotation(part: VehiclePart, side: number, open: boolean): THREE.Matrix4 {
+    if (!open) return new THREE.Matrix4();
+    if (part === 'bonnet') return new THREE.Matrix4().makeRotationX(-0.72);
+    if (part === 'boot') return new THREE.Matrix4().makeRotationX(0.68);
+    // Door direction is derived from the authored bone's X position: left
+    // opens left, right opens right. This works for both front and rear doors.
+    return new THREE.Matrix4().makeRotationZ(side * 0.76);
   }
 
   /** Texture changes come in bursts (searches, live livery previews); redraw the sidebar once they settle. */
