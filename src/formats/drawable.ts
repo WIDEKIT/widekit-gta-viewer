@@ -249,6 +249,21 @@ function readGeometry(r: ResourceReader, ptr: number, shaderIndex: number): Mesh
     normals = new Float32Array(vertexCount * 3);
     readComponent(view, stride, vertexCount, offsets[Sem.Normal], typeOf(Sem.Normal), 3, normals);
   }
+  // Vehicle bodies are commonly one skinned model. Keep the raw palette data
+  // so the web viewer can move a door/bonnet around its authored GTA bone.
+  const readBlend = (sem: Sem): Uint8Array | undefined => {
+    const offset = offsets[sem];
+    const type = typeOf(sem);
+    if (offset < 0 || (type !== CT.UByte4 && type !== CT.Colour)) return undefined;
+    const output = new Uint8Array(vertexCount * 4);
+    for (let v = 0; v < vertexCount; v++) {
+      const source = v * stride + offset;
+      output.set(bytes.subarray(source, source + 4), v * 4);
+    }
+    return output;
+  };
+  const blendWeights = readBlend(Sem.BlendWeights);
+  const blendIndices = readBlend(Sem.BlendIndices);
   let uvs: Float32Array | undefined;
   if (offsets[Sem.TexCoord0] >= 0) {
     uvs = new Float32Array(vertexCount * 2);
@@ -281,7 +296,17 @@ function readGeometry(r: ResourceReader, ptr: number, shaderIndex: number): Mesh
   const idxView = new DataView(idxBytes.buffer, idxBytes.byteOffset, idxBytes.byteLength);
   for (let i = 0; i < indexCount; i++) indices[i] = idxView.getUint16(i * 2, true);
 
-  return { shaderIndex, positions, normals, uvs, ...(uvs2 ? { uvs2 } : {}), colors, indices };
+  return {
+    shaderIndex,
+    positions,
+    normals,
+    ...(blendIndices ? { blendIndices } : {}),
+    ...(blendWeights ? { blendWeights } : {}),
+    uvs,
+    ...(uvs2 ? { uvs2 } : {}),
+    colors,
+    indices,
+  };
 }
 
 function readComponent(

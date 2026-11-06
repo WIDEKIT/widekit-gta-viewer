@@ -49,6 +49,10 @@ export interface MeshData {
   shaderIndex: number;
   positions: Float32Array;
   normals?: Float32Array;
+  /** Four skeleton-palette indices per vertex, retained for vehicle part animation. */
+  blendIndices?: Uint8Array;
+  /** Four raw (0-255) skeleton weights per vertex, retained for vehicle part animation. */
+  blendWeights?: Uint8Array;
   uvs?: Float32Array;
   /** Second UV set (TexCoord1), where present. */
   uvs2?: Float32Array;

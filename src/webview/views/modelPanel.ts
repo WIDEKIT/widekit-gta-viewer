@@ -42,7 +42,17 @@ const VEHICLE_PART_BONES: Record<VehiclePart, readonly string[]> = {
   passenger_rear: ['door_pside_r', 'doorb2', 'door_passenger_r'],
 };
 
-type VehiclePartBinding = { group: THREE.Group; rest: THREE.Matrix4; side: number };
+type VehiclePartBone = { boneIndex: number; pivot: THREE.Vector3; side: number };
+
+type VehicleSkinBinding = {
+  geometry: THREE.BufferGeometry;
+  position: THREE.BufferAttribute;
+  normal?: THREE.BufferAttribute;
+  restPositions: Float32Array;
+  restNormals?: Float32Array;
+  blendIndices: Uint8Array;
+  blendWeights: Uint8Array;
+};
 
 function isVehiclePart(value: string): value is VehiclePart {
   return value in VEHICLE_PART_BONES;
@@ -124,8 +134,9 @@ export class ModelPanel {
   private readonly liverySection: HTMLElement;
   private readonly sidebarRest = h('div');
   private sidebarQueued = false;
-  /** Rigid drawable groups bound to GTA door/bonnet/boot bones. */
-  private readonly vehicleParts = new Map<VehiclePart, VehiclePartBinding[]>();
+  /** Vehicle bones and skin data used for door, bonnet and boot articulation. */
+  private readonly vehiclePartBones = new Map<VehiclePart, VehiclePartBone>();
+  private vehicleSkinBindings: VehicleSkinBinding[] = [];
   private readonly openVehicleParts = new Set<VehiclePart>();
 
   constructor(private readonly options: ModelPanelOptions = {}) {
@@ -249,18 +260,13 @@ export class ModelPanel {
     this.viewer.requestRender();
   }
 
-  /** Opens or closes a rigid vehicle piece around the pivot provided by its GTA bone. */
+  /** Opens or closes an authored GTA vehicle part around its skeleton bone. */
   setVehiclePart(part: string, open: boolean): void {
     if (!isVehiclePart(part)) return;
-    const bindings = this.vehicleParts.get(part);
-    if (!bindings?.length) return;
+    if (!this.vehiclePartBones.has(part) || !this.vehicleSkinBindings.length) return;
     if (open) this.openVehicleParts.add(part);
     else this.openVehicleParts.delete(part);
-    const rotation = this.vehiclePartRotation(part, bindings[0].side, open);
-    for (const { group, rest } of bindings) {
-      group.matrix.copy(rest).multiply(rotation);
-      group.matrixWorldNeedsUpdate = true;
-    }
+    this.applyVehiclePartTransforms();
     this.viewer.requestRender();
   }
 
@@ -301,28 +307,87 @@ export class ModelPanel {
     this.renderSidebar();
   }
 
-  /**
-   * Captures authored rigid groups for the vehicle's moving bones. The initial
-   * matrix is kept intact, then local rotation is applied at the bone origin.
-   */
+  /** Captures real GTA skin weights; most vehicle bodies are one skinned mesh. */
   private bindVehicleParts(root: THREE.Group, vehicle: DrawableData): void {
-    this.vehicleParts.clear();
-    const models = vehicle.lods[this.lod];
+    this.vehiclePartBones.clear();
+    this.vehicleSkinBindings = [];
     for (const part of Object.keys(VEHICLE_PART_BONES) as VehiclePart[]) {
       const names = new Set(VEHICLE_PART_BONES[part]);
       const boneIndex = vehicle.bones.findIndex((bone) => names.has(bone.name.toLowerCase()));
       if (boneIndex < 0) continue;
       const side = Math.sign(Number(vehicle.bones[boneIndex].world[12])) || (part.includes('driver') ? -1 : 1);
-      const bindings: VehiclePartBinding[] = [];
-      models.forEach((model, index) => {
-        if (model.skinned || model.boneIndex !== boneIndex) return;
-        const group = root.children[index];
-        if (!(group instanceof THREE.Group)) return;
-        bindings.push({ group, rest: group.matrix.clone(), side });
-      });
-      if (bindings.length) this.vehicleParts.set(part, bindings);
+      const pivot = new THREE.Vector3().setFromMatrixPosition(new THREE.Matrix4().fromArray(vehicle.bones[boneIndex].world));
+      this.vehiclePartBones.set(part, { boneIndex, pivot, side });
     }
-    for (const part of this.openVehicleParts) this.setVehiclePart(part, true);
+    root.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const geometry = object.geometry;
+      const skin = geometry.userData.widekitSkin as { blendIndices?: Uint8Array; blendWeights?: Uint8Array } | undefined;
+      const position = geometry.getAttribute('position');
+      if (!skin?.blendIndices || !skin?.blendWeights || !(position instanceof THREE.BufferAttribute)) return;
+      const normal = geometry.getAttribute('normal');
+      this.vehicleSkinBindings.push({
+        geometry,
+        position,
+        ...(normal instanceof THREE.BufferAttribute ? { normal } : {}),
+        restPositions: new Float32Array(position.array as Float32Array),
+        ...(normal instanceof THREE.BufferAttribute ? { restNormals: new Float32Array(normal.array as Float32Array) } : {}),
+        blendIndices: skin.blendIndices,
+        blendWeights: skin.blendWeights,
+      });
+    });
+    this.applyVehiclePartTransforms();
+  }
+
+  /** Deforms every vertex according to its dominant moving-bone influence. */
+  private applyVehiclePartTransforms(): void {
+    const transforms = new Map<number, { matrix: THREE.Matrix4; normal: THREE.Matrix3 }>();
+    for (const part of this.openVehicleParts) {
+      const bone = this.vehiclePartBones.get(part);
+      if (!bone) continue;
+      const rotation = this.vehiclePartRotation(part, bone.side, true);
+      const matrix = new THREE.Matrix4()
+        .makeTranslation(bone.pivot.x, bone.pivot.y, bone.pivot.z)
+        .multiply(rotation)
+        .multiply(new THREE.Matrix4().makeTranslation(-bone.pivot.x, -bone.pivot.y, -bone.pivot.z));
+      transforms.set(bone.boneIndex, { matrix, normal: new THREE.Matrix3().getNormalMatrix(matrix) });
+    }
+    const point = new THREE.Vector3();
+    const direction = new THREE.Vector3();
+    for (const binding of this.vehicleSkinBindings) {
+      const positions = binding.position.array as Float32Array;
+      positions.set(binding.restPositions);
+      const normals = binding.normal?.array as Float32Array | undefined;
+      if (normals && binding.restNormals) normals.set(binding.restNormals);
+      for (let vertex = 0; vertex < binding.position.count; vertex++) {
+        const base = vertex * 4;
+        let transform: { matrix: THREE.Matrix4; normal: THREE.Matrix3 } | undefined;
+        let strongest = 0;
+        for (let influence = 0; influence < 4; influence++) {
+          const candidate = transforms.get(binding.blendIndices[base + influence]);
+          const weight = binding.blendWeights[base + influence];
+          if (candidate && weight > strongest) {
+            transform = candidate;
+            strongest = weight;
+          }
+        }
+        if (!transform || strongest === 0) continue;
+        const p = vertex * 3;
+        point.fromArray(binding.restPositions, p).applyMatrix4(transform.matrix);
+        positions[p] = point.x;
+        positions[p + 1] = point.y;
+        positions[p + 2] = point.z;
+        if (normals && binding.restNormals) {
+          direction.fromArray(binding.restNormals, p).applyMatrix3(transform.normal).normalize();
+          normals[p] = direction.x;
+          normals[p + 1] = direction.y;
+          normals[p + 2] = direction.z;
+        }
+      }
+      binding.position.needsUpdate = true;
+      if (binding.normal) binding.normal.needsUpdate = true;
+      binding.geometry.computeBoundingSphere();
+    }
   }
 
   private vehiclePartRotation(part: VehiclePart, side: number, open: boolean): THREE.Matrix4 {

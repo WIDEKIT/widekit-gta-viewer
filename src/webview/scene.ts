@@ -356,6 +356,14 @@ export function buildDrawable(
         geometry = new THREE.BufferGeometry();
         geometry.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
         if (mesh.normals) geometry.setAttribute('normal', new THREE.BufferAttribute(mesh.normals, 3));
+        if (mesh.blendIndices && mesh.blendWeights) {
+          // The browser viewer renders regular Meshes, but ModelPanel uses this
+          // retained GTA skin data for lightweight door/bonnet articulation.
+          geometry.userData.widekitSkin = {
+            blendIndices: mesh.blendIndices,
+            blendWeights: mesh.blendWeights,
+          };
+        }
         // Liveries are mapped with the second UV set.
         const shader = d.shaders[mesh.shaderIndex];
         const uvs = shader && isLiveryShader(shader) && mesh.uvs2 ? mesh.uvs2 : mesh.uvs;
