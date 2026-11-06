@@ -177,6 +177,9 @@ export class ModelPanel {
   private vehicleAnimationFrame?: number;
   /** Individually addressable light materials inferred from authored YFT shaders. */
   private readonly vehicleLights = new Map<VehicleLight, VehicleLightBinding[]>();
+  /** GTA indicators flash while all other lamp channels remain steady. */
+  private indicatorsEnabled = false;
+  private indicatorAnimationFrame?: number;
 
   constructor(private readonly options: ModelPanelOptions = {}) {
     this.toolbar = h('div', { class: 'toolbar' });
@@ -323,18 +326,23 @@ export class ModelPanel {
     if (!isVehicleLight(light)) return;
     const bindings = this.vehicleLights.get(light);
     if (!bindings?.length) return;
-    for (const binding of bindings) {
-      // The overlay samples the authored lamp texture. Keeping it hidden when
-      // off leaves GTA's original lens colour, transparency and material intact.
-      binding.material.emissiveMap = binding.source.map;
-      binding.material.needsUpdate = true;
-      binding.overlay.visible = enabled;
+    if (light === 'indicators') {
+      this.indicatorsEnabled = enabled;
+      if (enabled) this.animateIndicators();
+      else {
+        if (this.indicatorAnimationFrame !== undefined) cancelAnimationFrame(this.indicatorAnimationFrame);
+        this.indicatorAnimationFrame = undefined;
+        this.setVehicleLightOverlayVisible('indicators', false);
+      }
+    } else {
+      this.setVehicleLightOverlayVisible(light, enabled);
     }
     this.viewer.requestRender();
   }
 
   dispose(): void {
     if (this.vehicleAnimationFrame !== undefined) cancelAnimationFrame(this.vehicleAnimationFrame);
+    if (this.indicatorAnimationFrame !== undefined) cancelAnimationFrame(this.indicatorAnimationFrame);
     this.offStore();
     this.livery.dispose();
     this.viewer.dispose();
@@ -465,6 +473,28 @@ export class ModelPanel {
       }
     }
   }
+
+  /** Changes a group without replacing any authored GTA material. */
+  private setVehicleLightOverlayVisible(light: VehicleLight, visible: boolean): void {
+    for (const binding of this.vehicleLights.get(light) ?? []) {
+      binding.material.emissiveMap = binding.source.map;
+      binding.material.needsUpdate = true;
+      binding.overlay.visible = visible;
+    }
+  }
+
+  /** Runs the familiar on/off indicator rhythm only while indicators are enabled. */
+  private animateIndicators = (): void => {
+    if (!this.indicatorsEnabled) {
+      this.indicatorAnimationFrame = undefined;
+      return;
+    }
+    const cycle = 920;
+    const phase = performance.now() % cycle;
+    this.setVehicleLightOverlayVisible('indicators', phase < cycle * 0.56);
+    this.viewer.requestRender();
+    this.indicatorAnimationFrame = requestAnimationFrame(this.animateIndicators);
+  };
 
   /**
    * Derives controllable lights from the real GTA external-state IDs in vertex
