@@ -42,7 +42,7 @@ const VEHICLE_PART_BONES: Record<VehiclePart, readonly string[]> = {
   passenger_rear: ['door_pside_r', 'doorb2', 'door_passenger_r'],
 };
 
-type VehiclePartBone = { boneIndex: number; pivot: THREE.Vector3; side: number };
+type VehiclePartBone = { boneIndices: ReadonlySet<number>; pivot: THREE.Vector3; side: number };
 
 type VehicleSkinBinding = {
   geometry: THREE.BufferGeometry;
@@ -138,6 +138,10 @@ export class ModelPanel {
   private readonly vehiclePartBones = new Map<VehiclePart, VehiclePartBone>();
   private vehicleSkinBindings: VehicleSkinBinding[] = [];
   private readonly openVehicleParts = new Set<VehiclePart>();
+  /** Current 0–1 pose for each part, retained while an animation is in flight. */
+  private readonly vehiclePartProgress = new Map<VehiclePart, number>();
+  private readonly vehiclePartTransitions = new Map<VehiclePart, { from: number; to: number; startedAt: number }>();
+  private vehicleAnimationFrame?: number;
 
   constructor(private readonly options: ModelPanelOptions = {}) {
     this.toolbar = h('div', { class: 'toolbar' });
@@ -266,11 +270,15 @@ export class ModelPanel {
     if (!this.vehiclePartBones.has(part) || !this.vehicleSkinBindings.length) return;
     if (open) this.openVehicleParts.add(part);
     else this.openVehicleParts.delete(part);
-    this.applyVehiclePartTransforms();
-    this.viewer.requestRender();
+    const current = this.vehiclePartProgress.get(part) ?? 0;
+    const target = open ? 1 : 0;
+    if (Math.abs(current - target) < 0.001) return;
+    this.vehiclePartTransitions.set(part, { from: current, to: target, startedAt: performance.now() });
+    this.animateVehicleParts();
   }
 
   dispose(): void {
+    if (this.vehicleAnimationFrame !== undefined) cancelAnimationFrame(this.vehicleAnimationFrame);
     this.offStore();
     this.livery.dispose();
     this.viewer.dispose();
@@ -317,7 +325,20 @@ export class ModelPanel {
       if (boneIndex < 0) continue;
       const side = Math.sign(Number(vehicle.bones[boneIndex].world[12])) || (part.includes('driver') ? -1 : 1);
       const pivot = new THREE.Vector3().setFromMatrixPosition(new THREE.Matrix4().fromArray(vehicle.bones[boneIndex].world));
-      this.vehiclePartBones.set(part, { boneIndex, pivot, side });
+      // GTA models place glass, handles, hinges and boot spoilers on child bones.
+      // They inherit their parent's pose, so use the door/boot's full descendant tree.
+      const boneIndices = new Set<number>([boneIndex]);
+      let foundChild = true;
+      while (foundChild) {
+        foundChild = false;
+        vehicle.bones.forEach((bone, index) => {
+          if (!boneIndices.has(index) && boneIndices.has(bone.parent)) {
+            boneIndices.add(index);
+            foundChild = true;
+          }
+        });
+      }
+      this.vehiclePartBones.set(part, { boneIndices, pivot, side });
     }
     root.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) return;
@@ -339,18 +360,37 @@ export class ModelPanel {
     this.applyVehiclePartTransforms();
   }
 
-  /** Deforms every vertex according to its dominant moving-bone influence. */
+  /** Interpolates part poses with a short eased motion instead of snapping. */
+  private animateVehicleParts = (): void => {
+    const now = performance.now();
+    const duration = 360;
+    for (const [part, transition] of this.vehiclePartTransitions) {
+      const t = Math.min(1, (now - transition.startedAt) / duration);
+      // Smoothstep keeps the motion gentle at both ends, including reversals.
+      const eased = t * t * (3 - 2 * t);
+      this.vehiclePartProgress.set(part, THREE.MathUtils.lerp(transition.from, transition.to, eased));
+      if (t === 1) this.vehiclePartTransitions.delete(part);
+    }
+    this.applyVehiclePartTransforms();
+    this.viewer.requestRender();
+    if (this.vehiclePartTransitions.size) this.vehicleAnimationFrame = requestAnimationFrame(this.animateVehicleParts);
+    else this.vehicleAnimationFrame = undefined;
+  };
+
+  /** Deforms vertices by their moving bone or any descendant of that bone. */
   private applyVehiclePartTransforms(): void {
     const transforms = new Map<number, { matrix: THREE.Matrix4; normal: THREE.Matrix3 }>();
-    for (const part of this.openVehicleParts) {
+    for (const [part, progress] of this.vehiclePartProgress) {
+      if (progress <= 0.0001) continue;
       const bone = this.vehiclePartBones.get(part);
       if (!bone) continue;
-      const rotation = this.vehiclePartRotation(part, bone.side, true);
+      const rotation = this.vehiclePartRotation(part, bone.side, progress);
       const matrix = new THREE.Matrix4()
         .makeTranslation(bone.pivot.x, bone.pivot.y, bone.pivot.z)
         .multiply(rotation)
         .multiply(new THREE.Matrix4().makeTranslation(-bone.pivot.x, -bone.pivot.y, -bone.pivot.z));
-      transforms.set(bone.boneIndex, { matrix, normal: new THREE.Matrix3().getNormalMatrix(matrix) });
+      const transform = { matrix, normal: new THREE.Matrix3().getNormalMatrix(matrix) };
+      for (const boneIndex of bone.boneIndices) transforms.set(boneIndex, transform);
     }
     const point = new THREE.Vector3();
     const direction = new THREE.Vector3();
@@ -390,13 +430,12 @@ export class ModelPanel {
     }
   }
 
-  private vehiclePartRotation(part: VehiclePart, side: number, open: boolean): THREE.Matrix4 {
-    if (!open) return new THREE.Matrix4();
-    if (part === 'bonnet') return new THREE.Matrix4().makeRotationX(-0.72);
-    if (part === 'boot') return new THREE.Matrix4().makeRotationX(0.68);
+  private vehiclePartRotation(part: VehiclePart, side: number, progress: number): THREE.Matrix4 {
+    if (part === 'bonnet') return new THREE.Matrix4().makeRotationX(-0.72 * progress);
+    if (part === 'boot') return new THREE.Matrix4().makeRotationX(0.68 * progress);
     // Door direction is derived from the authored bone's X position: left
     // opens left, right opens right. This works for both front and rear doors.
-    return new THREE.Matrix4().makeRotationZ(side * 0.76);
+    return new THREE.Matrix4().makeRotationZ(side * 0.76 * progress);
   }
 
   /** Texture changes come in bursts (searches, live livery previews); redraw the sidebar once they settle. */
