@@ -33,7 +33,7 @@ type WheelSlot = Exclude<ReturnType<typeof wheelSlot>, undefined>;
 /** Named vehicle pieces exposed by the read-only WideKit showroom controls. */
 type VehiclePart = 'bonnet' | 'boot' | 'driver_front' | 'passenger_front' | 'driver_rear' | 'passenger_rear';
 type VehicleLight = 'headlights' | 'tail_lights' | 'indicators' | 'reverse_lights' | 'brake_lights' | 'extra_lights';
-type CameraPreset = 'front' | 'rear' | 'side' | 'top' | 'under' | 'engine';
+type CameraPreset = 'front' | 'rear' | 'side' | 'top' | 'under' | 'engine' | 'trunk' | 'interior';
 
 const VEHICLE_PART_BONES: Record<VehiclePart, readonly string[]> = {
   bonnet: ['bonnet', 'hood'],
@@ -71,7 +71,7 @@ function isVehicleLight(value: string): value is VehicleLight {
 }
 
 function isCameraPreset(value: string): value is CameraPreset {
-  return value === 'front' || value === 'rear' || value === 'side' || value === 'top' || value === 'under' || value === 'engine';
+  return value === 'front' || value === 'rear' || value === 'side' || value === 'top' || value === 'under' || value === 'engine' || value === 'trunk' || value === 'interior';
 }
 
 function vehicleLightKind(signature: string, isFront: boolean): VehicleLight | undefined {
@@ -190,6 +190,8 @@ export class ModelPanel {
   private cameraPresetsVisible = false;
   private cameraPresetPointer?: THREE.Vector2;
   private cameraPresetAnimationFrame?: number;
+  /** A panel opened solely by a camera focus; it closes when leaving that focus. */
+  private cameraPresetOpenedPart?: VehiclePart;
 
   constructor(private readonly options: ModelPanelOptions = {}) {
     this.toolbar = h('div', { class: 'toolbar' });
@@ -256,6 +258,7 @@ export class ModelPanel {
 
   /** Public, read-only preview controls used by the WideKit browser shell. */
   frame(): void {
+    this.closeCameraPresetPart();
     this.viewer.frame();
   }
 
@@ -266,6 +269,7 @@ export class ModelPanel {
   /** Shows small interactive focus points in the 3D studio. */
   setCameraPresetsVisible(visible: boolean): void {
     this.cameraPresetsVisible = visible;
+    if (!visible) this.closeCameraPresetPart();
     if (this.cameraPresetHotspots) this.cameraPresetHotspots.visible = visible;
     this.viewer.requestRender();
   }
@@ -273,9 +277,12 @@ export class ModelPanel {
   /** Moves the camera smoothly to a useful inspection angle. */
   setCameraPreset(preset: string): void {
     if (!isCameraPreset(preset)) return;
+    this.closeCameraPresetPart();
     const bounds = new THREE.Box3().setFromObject(this.viewer.content);
     if (bounds.isEmpty()) return;
-    if (preset === 'engine') this.setVehiclePart('bonnet', true);
+    if (preset === 'engine') this.openCameraPresetPart('bonnet');
+    if (preset === 'trunk') this.openCameraPresetPart('boot');
+    if (preset === 'interior') this.openCameraPresetPart('driver_front');
     const size = bounds.getSize(new THREE.Vector3());
     const center = bounds.getCenter(new THREE.Vector3());
     const target = center.clone();
@@ -308,8 +315,30 @@ export class ModelPanel {
         direction.set(0, 0.85, 0.72);
         distance *= 0.58;
         break;
+      case 'trunk':
+        target.set(center.x, bounds.min.y + size.y * 0.18, bounds.min.z + size.z * 0.5);
+        direction.set(0, -0.92, 0.42);
+        distance *= 0.66;
+        break;
+      case 'interior':
+        target.set(bounds.min.x + size.x * 0.32, center.y + size.y * 0.04, bounds.min.z + size.z * 0.6);
+        direction.set(-1, 0.08, 0.18);
+        distance *= 0.44;
+        break;
     }
     this.animateCamera(target, direction.normalize(), distance);
+  }
+
+  private openCameraPresetPart(part: VehiclePart): void {
+    if (!this.vehiclePartBones.has(part)) return;
+    this.cameraPresetOpenedPart = part;
+    this.setVehiclePart(part, true);
+  }
+
+  private closeCameraPresetPart(): void {
+    if (!this.cameraPresetOpenedPart) return;
+    this.setVehiclePart(this.cameraPresetOpenedPart, false);
+    this.cameraPresetOpenedPart = undefined;
   }
 
   setPaint(colour: string, target: 'primary' | 'secondary' = 'primary'): void {
@@ -614,7 +643,7 @@ export class ModelPanel {
     group.visible = this.cameraPresetsVisible;
     const size = bounds.getSize(new THREE.Vector3());
     const center = bounds.getCenter(new THREE.Vector3());
-    const markScale = Math.max(Math.max(size.x, size.y, size.z) * 0.18, 0.42);
+    const markScale = Math.max(Math.max(size.x, size.y, size.z) * 0.09, 0.2);
     const points: Array<[CameraPreset, string, THREE.Vector3]> = [
       ['front', 'FRONT', new THREE.Vector3(center.x, bounds.max.y + size.y * 0.12, center.z + size.z * 0.18)],
       ['rear', 'REAR', new THREE.Vector3(center.x, bounds.min.y - size.y * 0.12, center.z + size.z * 0.18)],
@@ -622,6 +651,8 @@ export class ModelPanel {
       ['top', 'TOP', new THREE.Vector3(center.x, center.y, bounds.max.z + size.z * 0.34)],
       ['under', 'UNDER', new THREE.Vector3(center.x, center.y, bounds.min.z - size.z * 0.22)],
       ['engine', 'ENGINE', new THREE.Vector3(center.x, bounds.max.y - size.y * 0.25, bounds.max.z + size.z * 0.18)],
+      ['trunk', 'TRUNK', new THREE.Vector3(center.x, bounds.min.y + size.y * 0.11, bounds.max.z + size.z * 0.13)],
+      ['interior', 'INTERIOR', new THREE.Vector3(bounds.min.x - size.x * 0.09, center.y + size.y * 0.02, bounds.min.z + size.z * 0.62)],
     ];
     for (const [preset, label, position] of points) group.add(this.createCameraPresetMarker(preset, label, position, markScale));
     this.cameraPresetHotspots = group;
@@ -630,24 +661,26 @@ export class ModelPanel {
 
   private createCameraPresetMarker(preset: CameraPreset, label: string, position: THREE.Vector3, scale: number): THREE.Sprite {
     const canvas = document.createElement('canvas');
-    canvas.width = 320;
-    canvas.height = 88;
+    canvas.width = 220;
+    canvas.height = 54;
     const context = canvas.getContext('2d');
     if (context) {
       context.clearRect(0, 0, canvas.width, canvas.height);
-      context.fillStyle = 'rgba(7, 17, 31, 0.88)';
-      context.fillRect(4, 8, 312, 72);
-      context.strokeStyle = preset === 'engine' ? '#ff9f1c' : '#6ff2c3';
-      context.lineWidth = 4;
-      context.strokeRect(4, 8, 312, 72);
+      context.fillStyle = 'rgba(7, 17, 31, 0.82)';
       context.beginPath();
-      context.arc(32, 44, 11, 0, Math.PI * 2);
+      context.roundRect(2, 3, 216, 48, 24);
+      context.fill();
+      context.strokeStyle = preset === 'engine' ? '#ff9f1c' : '#6ff2c3';
+      context.lineWidth = 2;
+      context.stroke();
+      context.beginPath();
+      context.arc(27, 27, 7, 0, Math.PI * 2);
       context.fillStyle = preset === 'engine' ? '#ff9f1c' : '#6ff2c3';
       context.fill();
       context.fillStyle = '#f7f8fb';
-      context.font = 'bold 28px monospace';
+      context.font = 'bold 18px monospace';
       context.textBaseline = 'middle';
-      context.fillText(label, 56, 45);
+      context.fillText(label, 44, 28);
     }
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
@@ -655,7 +688,7 @@ export class ModelPanel {
     const marker = new THREE.Sprite(material);
     marker.name = `widekit-camera-preset-${preset}`;
     marker.position.copy(position);
-    marker.scale.set(scale * 1.9, scale * 0.52, 1);
+    marker.scale.set(scale * 1.4, scale * 0.34, 1);
     marker.renderOrder = 10;
     marker.userData.cameraPreset = preset;
     return marker;
