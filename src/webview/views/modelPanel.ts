@@ -323,11 +323,11 @@ export class ModelPanel {
         distance *= 0.66;
         break;
       case 'interior':
-        // Frame the cabin from outside and slightly ahead of the opened
-        // driver door, looking diagonally across the seats and dashboard.
-        target.set(bounds.min.x + size.x * 0.43, center.y + size.y * 0.02, bounds.min.z + size.z * 0.48);
-        direction.set(-1, 0.38, 0.14);
-        distance *= 1.18;
+        // Sit just outside the opened driver door, at a relaxed side angle
+        // that keeps the wheel, dashboard, and front seats in one frame.
+        target.set(bounds.min.x + size.x * 0.4, center.y + size.y * 0.09, bounds.min.z + size.z * 0.46);
+        direction.set(-1, 0.27, 0.12);
+        distance *= 1.24;
         break;
     }
     this.animateCamera(target, direction.normalize(), distance);
