@@ -433,6 +433,9 @@ export class ModelPanel {
     if (stateId !== undefined) {
       material.vertexColors = true;
       const stateAlpha = (stateId / 255).toFixed(8);
+      // onBeforeCompile is state-specific. Without a unique key Three.js
+      // reuses the first compiled light shader for every button.
+      material.customProgramCacheKey = () => `widekit-light-state-${stateId}`;
       material.onBeforeCompile = (shader) => {
         shader.fragmentShader = shader.fragmentShader.replace(
           '#include <color_fragment>',
