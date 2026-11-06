@@ -303,17 +303,19 @@ export class ModelPanel {
         break;
       case 'top':
         direction.set(0, -0.12, 1);
-        distance *= 0.98;
+        distance *= 1.45;
         break;
       case 'under':
         target.z = bounds.min.z + size.z * 0.1;
         direction.set(0, 0.08, -1);
-        distance *= 0.8;
+        distance *= 1.35;
         break;
       case 'engine':
-        target.set(center.x, bounds.max.y - size.y * 0.28, bounds.min.z + size.z * 0.62);
-        direction.set(0, 0.85, 0.72);
-        distance *= 0.58;
+        // Sit just outside the bonnet line, with a shallow downward angle so
+        // the engine bay is visible rather than filling the entire frame.
+        target.set(center.x, bounds.max.y - size.y * 0.3, bounds.min.z + size.z * 0.45);
+        direction.set(0, 0.94, 0.46);
+        distance *= 0.92;
         break;
       case 'trunk':
         target.set(center.x, bounds.min.y + size.y * 0.18, bounds.min.z + size.z * 0.5);
@@ -321,9 +323,11 @@ export class ModelPanel {
         distance *= 0.66;
         break;
       case 'interior':
-        target.set(bounds.min.x + size.x * 0.32, center.y + size.y * 0.04, bounds.min.z + size.z * 0.6);
-        direction.set(-1, 0.08, 0.18);
-        distance *= 0.44;
+        // Keep the camera outside the opened driver door for a readable
+        // side-on cabin view instead of clipping into the dashboard/door.
+        target.set(bounds.min.x + size.x * 0.34, center.y + size.y * 0.08, bounds.min.z + size.z * 0.52);
+        direction.set(-1, 0.16, 0.2);
+        distance *= 0.92;
         break;
     }
     this.animateCamera(target, direction.normalize(), distance);
@@ -643,7 +647,7 @@ export class ModelPanel {
     group.visible = this.cameraPresetsVisible;
     const size = bounds.getSize(new THREE.Vector3());
     const center = bounds.getCenter(new THREE.Vector3());
-    const markScale = Math.max(Math.max(size.x, size.y, size.z) * 0.09, 0.2);
+    const markScale = Math.max(Math.max(size.x, size.y, size.z) * 0.045, 0.1);
     const points: Array<[CameraPreset, string, THREE.Vector3]> = [
       ['front', 'FRONT', new THREE.Vector3(center.x, bounds.max.y + size.y * 0.12, center.z + size.z * 0.18)],
       ['rear', 'REAR', new THREE.Vector3(center.x, bounds.min.y - size.y * 0.12, center.z + size.z * 0.18)],
