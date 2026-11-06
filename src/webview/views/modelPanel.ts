@@ -33,6 +33,7 @@ type WheelSlot = Exclude<ReturnType<typeof wheelSlot>, undefined>;
 /** Named vehicle pieces exposed by the read-only WideKit showroom controls. */
 type VehiclePart = 'bonnet' | 'boot' | 'driver_front' | 'passenger_front' | 'driver_rear' | 'passenger_rear';
 type VehicleLight = 'headlights' | 'tail_lights' | 'indicators' | 'reverse_lights' | 'brake_lights' | 'extra_lights';
+type CameraPreset = 'front' | 'rear' | 'side' | 'top' | 'under' | 'engine';
 
 const VEHICLE_PART_BONES: Record<VehiclePart, readonly string[]> = {
   bonnet: ['bonnet', 'hood'],
@@ -67,6 +68,10 @@ function isVehiclePart(value: string): value is VehiclePart {
 
 function isVehicleLight(value: string): value is VehicleLight {
   return value === 'headlights' || value === 'tail_lights' || value === 'indicators' || value === 'reverse_lights' || value === 'brake_lights' || value === 'extra_lights';
+}
+
+function isCameraPreset(value: string): value is CameraPreset {
+  return value === 'front' || value === 'rear' || value === 'side' || value === 'top' || value === 'under' || value === 'engine';
 }
 
 function vehicleLightKind(signature: string, isFront: boolean): VehicleLight | undefined {
@@ -180,6 +185,11 @@ export class ModelPanel {
   /** GTA indicators flash while all other lamp channels remain steady. */
   private indicatorsEnabled = false;
   private indicatorAnimationFrame?: number;
+  /** Optional in-scene camera focus points, kept outside vehicle bounds. */
+  private cameraPresetHotspots?: THREE.Group;
+  private cameraPresetsVisible = false;
+  private cameraPresetPointer?: THREE.Vector2;
+  private cameraPresetAnimationFrame?: number;
 
   constructor(private readonly options: ModelPanelOptions = {}) {
     this.toolbar = h('div', { class: 'toolbar' });
@@ -193,6 +203,8 @@ export class ModelPanel {
       h('div', { class: 'model-body' }, stage, options.sidebar === false ? null : this.sidebar)
     );
     this.viewer = new Viewer(stage);
+    this.viewer.renderer.domElement.addEventListener('pointerdown', this.onCameraPresetPointerDown);
+    this.viewer.renderer.domElement.addEventListener('pointerup', this.onCameraPresetPointerUp);
     this.viewer.setGridVisible(pref('grid', true));
     this.store.showTextures = this.opts.textures;
     this.offStore = this.store.onChange(() => {
@@ -249,6 +261,55 @@ export class ModelPanel {
 
   setAutoRotate(enabled: boolean): void {
     this.viewer.setAutoRotate(enabled);
+  }
+
+  /** Shows small interactive focus points in the 3D studio. */
+  setCameraPresetsVisible(visible: boolean): void {
+    this.cameraPresetsVisible = visible;
+    if (this.cameraPresetHotspots) this.cameraPresetHotspots.visible = visible;
+    this.viewer.requestRender();
+  }
+
+  /** Moves the camera smoothly to a useful inspection angle. */
+  setCameraPreset(preset: string): void {
+    if (!isCameraPreset(preset)) return;
+    const bounds = new THREE.Box3().setFromObject(this.viewer.content);
+    if (bounds.isEmpty()) return;
+    if (preset === 'engine') this.setVehiclePart('bonnet', true);
+    const size = bounds.getSize(new THREE.Vector3());
+    const center = bounds.getCenter(new THREE.Vector3());
+    const target = center.clone();
+    const direction = new THREE.Vector3();
+    let distance = Math.max(size.length() * 0.68, 3);
+    switch (preset) {
+      case 'front':
+        target.y = bounds.max.y - size.y * 0.17;
+        direction.set(0, 1, 0.22);
+        break;
+      case 'rear':
+        target.y = bounds.min.y + size.y * 0.17;
+        direction.set(0, -1, 0.22);
+        break;
+      case 'side':
+        target.x = bounds.max.x - size.x * 0.1;
+        direction.set(1, 0, 0.16);
+        break;
+      case 'top':
+        direction.set(0, -0.12, 1);
+        distance *= 0.98;
+        break;
+      case 'under':
+        target.z = bounds.min.z + size.z * 0.1;
+        direction.set(0, 0.08, -1);
+        distance *= 0.8;
+        break;
+      case 'engine':
+        target.set(center.x, bounds.max.y - size.y * 0.28, bounds.min.z + size.z * 0.62);
+        direction.set(0, 0.85, 0.72);
+        distance *= 0.58;
+        break;
+    }
+    this.animateCamera(target, direction.normalize(), distance);
   }
 
   setPaint(colour: string, target: 'primary' | 'secondary' = 'primary'): void {
@@ -343,6 +404,9 @@ export class ModelPanel {
   dispose(): void {
     if (this.vehicleAnimationFrame !== undefined) cancelAnimationFrame(this.vehicleAnimationFrame);
     if (this.indicatorAnimationFrame !== undefined) cancelAnimationFrame(this.indicatorAnimationFrame);
+    if (this.cameraPresetAnimationFrame !== undefined) cancelAnimationFrame(this.cameraPresetAnimationFrame);
+    this.viewer.renderer.domElement.removeEventListener('pointerdown', this.onCameraPresetPointerDown);
+    this.viewer.renderer.domElement.removeEventListener('pointerup', this.onCameraPresetPointerUp);
     this.offStore();
     this.livery.dispose();
     this.viewer.dispose();
@@ -366,6 +430,7 @@ export class ModelPanel {
     this.addWheelChildren(content, d, d.fragmentChildren ?? []);
     this.viewer.setContent(content);
     this.bindVehicleLights(content, d);
+    this.buildCameraPresetHotspots(new THREE.Box3().setFromObject(content));
     this.bounds = boxHelper(d.bbMin, d.bbMax, 0xffc107);
     this.bounds.visible = pref('bounds', false);
     this.viewer.overlay.add(this.bounds);
@@ -538,6 +603,101 @@ export class ModelPanel {
       this.vehicleLights.set(light, bindings);
     });
     this.refreshVehicleLightMaps();
+  }
+
+  /** Builds clickable, screen-legible points around the active vehicle. */
+  private buildCameraPresetHotspots(bounds: THREE.Box3): void {
+    this.cameraPresetHotspots?.removeFromParent();
+    if (bounds.isEmpty()) return;
+    const group = new THREE.Group();
+    group.name = 'widekit-camera-presets';
+    group.visible = this.cameraPresetsVisible;
+    const size = bounds.getSize(new THREE.Vector3());
+    const center = bounds.getCenter(new THREE.Vector3());
+    const markScale = Math.max(Math.max(size.x, size.y, size.z) * 0.18, 0.42);
+    const points: Array<[CameraPreset, string, THREE.Vector3]> = [
+      ['front', 'FRONT', new THREE.Vector3(center.x, bounds.max.y + size.y * 0.12, center.z + size.z * 0.18)],
+      ['rear', 'REAR', new THREE.Vector3(center.x, bounds.min.y - size.y * 0.12, center.z + size.z * 0.18)],
+      ['side', 'SIDE', new THREE.Vector3(bounds.max.x + size.x * 0.12, center.y, center.z + size.z * 0.12)],
+      ['top', 'TOP', new THREE.Vector3(center.x, center.y, bounds.max.z + size.z * 0.34)],
+      ['under', 'UNDER', new THREE.Vector3(center.x, center.y, bounds.min.z - size.z * 0.22)],
+      ['engine', 'ENGINE', new THREE.Vector3(center.x, bounds.max.y - size.y * 0.25, bounds.max.z + size.z * 0.18)],
+    ];
+    for (const [preset, label, position] of points) group.add(this.createCameraPresetMarker(preset, label, position, markScale));
+    this.cameraPresetHotspots = group;
+    this.viewer.overlay.add(group);
+  }
+
+  private createCameraPresetMarker(preset: CameraPreset, label: string, position: THREE.Vector3, scale: number): THREE.Sprite {
+    const canvas = document.createElement('canvas');
+    canvas.width = 320;
+    canvas.height = 88;
+    const context = canvas.getContext('2d');
+    if (context) {
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.fillStyle = 'rgba(7, 17, 31, 0.88)';
+      context.fillRect(4, 8, 312, 72);
+      context.strokeStyle = preset === 'engine' ? '#ff9f1c' : '#6ff2c3';
+      context.lineWidth = 4;
+      context.strokeRect(4, 8, 312, 72);
+      context.beginPath();
+      context.arc(32, 44, 11, 0, Math.PI * 2);
+      context.fillStyle = preset === 'engine' ? '#ff9f1c' : '#6ff2c3';
+      context.fill();
+      context.fillStyle = '#f7f8fb';
+      context.font = 'bold 28px monospace';
+      context.textBaseline = 'middle';
+      context.fillText(label, 56, 45);
+    }
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false });
+    const marker = new THREE.Sprite(material);
+    marker.name = `widekit-camera-preset-${preset}`;
+    marker.position.copy(position);
+    marker.scale.set(scale * 1.9, scale * 0.52, 1);
+    marker.renderOrder = 10;
+    marker.userData.cameraPreset = preset;
+    return marker;
+  }
+
+  private onCameraPresetPointerDown = (event: PointerEvent): void => {
+    this.cameraPresetPointer = new THREE.Vector2(event.clientX, event.clientY);
+  };
+
+  private onCameraPresetPointerUp = (event: PointerEvent): void => {
+    if (!this.cameraPresetsVisible || !this.cameraPresetHotspots || !this.cameraPresetPointer) return;
+    if (this.cameraPresetPointer.distanceTo(new THREE.Vector2(event.clientX, event.clientY)) > 7) return;
+    const rect = this.viewer.renderer.domElement.getBoundingClientRect();
+    const cursor = new THREE.Vector2(
+      ((event.clientX - rect.left) / rect.width) * 2 - 1,
+      -((event.clientY - rect.top) / rect.height) * 2 + 1
+    );
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(cursor, this.viewer.camera);
+    const hit = raycaster.intersectObjects(this.cameraPresetHotspots.children, true).find((item) => isCameraPreset(item.object.userData.cameraPreset));
+    if (!hit) return;
+    event.preventDefault();
+    this.setCameraPreset(hit.object.userData.cameraPreset as string);
+  };
+
+  private animateCamera(target: THREE.Vector3, direction: THREE.Vector3, distance: number): void {
+    if (this.cameraPresetAnimationFrame !== undefined) cancelAnimationFrame(this.cameraPresetAnimationFrame);
+    const startPosition = this.viewer.camera.position.clone();
+    const startTarget = this.viewer.controls.target.clone();
+    const endPosition = target.clone().addScaledVector(direction, distance);
+    const startedAt = performance.now();
+    const tick = () => {
+      const t = Math.min(1, (performance.now() - startedAt) / 560);
+      const eased = t * t * (3 - 2 * t);
+      this.viewer.camera.position.lerpVectors(startPosition, endPosition, eased);
+      this.viewer.controls.target.lerpVectors(startTarget, target, eased);
+      this.viewer.controls.update();
+      this.viewer.requestRender();
+      if (t < 1) this.cameraPresetAnimationFrame = requestAnimationFrame(tick);
+      else this.cameraPresetAnimationFrame = undefined;
+    };
+    tick();
   }
 
   /** Interpolates part poses with a short eased motion instead of snapping. */

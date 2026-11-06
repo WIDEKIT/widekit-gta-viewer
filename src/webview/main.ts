@@ -94,6 +94,12 @@ window.addEventListener('message', (event: MessageEvent<{ type?: string; command
     case 'auto-rotate':
       modelPanel.setAutoRotate(Boolean(message.value));
       break;
+    case 'camera-presets':
+      modelPanel.setCameraPresetsVisible(Boolean(message.value));
+      break;
+    case 'camera-preset':
+      if (typeof message.target === 'string') modelPanel.setCameraPreset(message.target);
+      break;
     case 'paint':
       if (typeof message.value === 'string') modelPanel.setPaint(message.value, message.target === 'secondary' ? 'secondary' : 'primary');
       break;
