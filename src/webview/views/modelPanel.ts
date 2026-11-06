@@ -431,8 +431,8 @@ export class ModelPanel {
   }
 
   private vehiclePartRotation(part: VehiclePart, side: number, progress: number): THREE.Matrix4 {
-    if (part === 'bonnet') return new THREE.Matrix4().makeRotationX(-0.72 * progress);
-    if (part === 'boot') return new THREE.Matrix4().makeRotationX(0.68 * progress);
+    if (part === 'bonnet') return new THREE.Matrix4().makeRotationX(0.72 * progress);
+    if (part === 'boot') return new THREE.Matrix4().makeRotationX(-0.68 * progress);
     // Door direction is derived from the authored bone's X position: left
     // opens left, right opens right. This works for both front and rear doors.
     return new THREE.Matrix4().makeRotationZ(side * 0.76 * progress);
