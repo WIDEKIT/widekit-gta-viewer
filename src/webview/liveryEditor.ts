@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { DrawableData, TextureData } from '../shared/model';
+import type { DrawableData, PaintSlot, TextureData } from '../shared/model';
 import {
   CENTRE_EPSILON,
   Decal,
@@ -12,11 +12,11 @@ import {
   LiverySet,
   liverySets,
   paintDecals,
-  paintRole,
   RgbaImage,
   Vec3,
 } from '../formats/livery';
 import { isEncodable, mipLevelsFor } from '../formats/bcEncode';
+import { paintSlots } from '../formats/paint';
 import { availableLod, DEFAULT_PAINT, TextureStore } from './scene';
 import { decodeBc7 } from './bc7';
 import { canvasToRgba, decodeImage, resizeCanvas, rgbaCanvas, rgbaToPng } from './imageUtils';
@@ -173,8 +173,8 @@ export class LiveryEditor {
     } else {
       sets.forEach((s, i) => (this.sets[i].set = s));
     }
-    if (d) for (const shader of new Set(d.shaders.filter((s) => /^vehicle_paint/i.test(s.name)).map((s) => s.name.toLowerCase()))) {
-      this.host.store.setPaint(shader, pref(`paint:${shader}`, DEFAULT_PAINT));
+    if (d) for (const slot of paintSlots(d)) {
+      this.host.store.setPaint(slot, pref(`paint:${slot}`, DEFAULT_PAINT));
     }
     if (this.sets.length) void this.loadLiveries();
     this.render();
@@ -1198,7 +1198,7 @@ export class LiveryEditor {
 
     // Paint colours.
     const d = this.drawableRef;
-    const paints = d ? [...new Set(d.shaders.filter((x) => /^vehicle_paint/i.test(x.name)).map((x) => x.name.toLowerCase()))].sort() : [];
+    const paints = paintSlots(d);
     if (paints.length) {
       rows.push(
         h('div', { class: 'pack-section' }, 'Paint'),
@@ -1213,8 +1213,7 @@ export class LiveryEditor {
               setPref(`paint:${p}`, c);
               this.host.viewer.requestRender();
             });
-            const role = paintRole(p);
-            return h('label', { class: 'toggle', title: role ? `Usually the ${role} colour` : 'Paint colour' }, input, p.replace(/^vehicle_/, ''), role ? h('span', { class: 'muted small' }, ` ${role}`) : null);
+            return h('label', { class: 'toggle', title: `Original GTA [PAINT:${p}] material tag` }, input, paintLabel(p));
           })
         )
       );
@@ -1438,6 +1437,10 @@ export class LiveryEditor {
       )
     );
   }
+}
+
+function paintLabel(slot: PaintSlot): string {
+  return ({ 1: 'Primary', 2: 'Secondary', 3: 'Paint 3', 4: 'Interior', 5: 'Wheels', 6: 'Calipers', 7: 'Accent' } as const)[slot];
 }
 
 const MIN_SIZE = 0.02;

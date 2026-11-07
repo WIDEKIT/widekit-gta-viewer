@@ -384,6 +384,8 @@ function readShader(r: ResourceReader, ptr: number): ShaderData {
     name: shaderNames.get(nameHash),
     file: shaderNames.get(fileHash),
     renderBucket,
+    parameterHashes: [],
+    parameters: [],
     textures: [],
   };
   if (!r.isValid(paramsPtr) || paramCount === 0) return shader;
@@ -399,10 +401,19 @@ function readShader(r: ResourceReader, ptr: number): ShaderData {
   }
   const hashesPtr = paramsPtr + paramCount * 16 + dataSize;
   params.forEach((param, i) => {
+    const parameterHash = r.u32(hashesPtr + i * 4);
+    shader.parameterHashes!.push(parameterHash);
+    shader.parameters!.push({
+      hash: parameterHash,
+      type: param.type,
+      values: param.type && r.isValid(param.data)
+        ? Array.from({ length: param.type * 4 }, (_, j) => r.f32(param.data + j * 4))
+        : undefined,
+    });
     if (param.type !== 0 || !r.isValid(param.data)) return;
     const texName = r.string(r.ptr(param.data + 0x28));
     if (!texName) return;
-    const paramName = paramNames.get(r.u32(hashesPtr + i * 4));
+    const paramName = paramNames.get(parameterHash);
     shader.textures.push({ param: paramName, texture: texName });
     const key = paramName.toLowerCase();
     if (!shader.diffuse && DIFFUSE_PARAMS.includes(key)) shader.diffuse = texName.toLowerCase();

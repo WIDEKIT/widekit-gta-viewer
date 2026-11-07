@@ -345,20 +345,23 @@ export class ModelPanel {
     this.cameraPresetOpenedPart = undefined;
   }
 
-  setPaint(colour: string, target = 'vehicle_paint1'): void {
+  setPaint(colour: string, target = 'primary'): void {
     if (!/^#[0-9a-f]{6}$/i.test(colour)) return;
     const value = new THREE.Color(colour).getHex();
-    const aliases: Record<string, string> = {
-      primary: 'vehicle_paint1',
-      secondary: 'vehicle_paint2',
-      interior: 'vehicle_paint4',
-      wheels: 'vehicle_paint5',
-      calipers: 'vehicle_paint6',
-      accent: 'vehicle_paint7',
+    const aliases: Record<string, number> = {
+      primary: 1,
+      secondary: 2,
+      paint3: 3,
+      'paint:3': 3,
+      interior: 4,
+      wheels: 5,
+      calipers: 6,
+      accent: 7,
     };
-    const shader = aliases[target] ?? target.toLowerCase();
-    if (!/^vehicle_paint(?:1|2|4|5|6|7)$/.test(shader)) return;
-    this.store.setPaint(shader, value);
+    const tag = target.toLowerCase().match(/(?:paint\s*:?\s*|\[\s*paint\s*:\s*)([1-7])/i);
+    const slot = aliases[target.toLowerCase()] ?? (tag ? Number(tag[1]) : undefined);
+    if (!slot || slot < 1 || slot > 7) return;
+    this.store.setPaint(slot as import('../../shared/model').PaintSlot, value);
     this.viewer.requestRender();
   }
 

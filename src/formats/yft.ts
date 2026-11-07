@@ -1,6 +1,7 @@
 import { ResourceReader } from './reader';
 import { readRsc7 } from './rsc7';
 import { readDrawable, DrawableOptions } from './drawable';
+import { applyPaintManifest } from './paint';
 import type { DrawableData, FragmentChildData } from '../shared/model';
 
 const ROOT = 0x50000000;
@@ -64,7 +65,7 @@ export function parseYft(file: Uint8Array, opts: DrawableOptions): DrawableData[
     // fragDrawable.  Attach them to the primary drawable so renderers can
     // compose the complete vehicle without treating them as collision data.
     if (index === 0) d.fragmentChildren = readPhysicsChildren(r, opts);
-    return d;
+    return applyPaintManifest(d);
   });
 }
 

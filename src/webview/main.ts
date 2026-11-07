@@ -101,7 +101,7 @@ window.addEventListener('message', (event: MessageEvent<{ type?: string; command
       if (typeof message.target === 'string') modelPanel.setCameraPreset(message.target);
       break;
     case 'paint':
-      if (typeof message.value === 'string') modelPanel.setPaint(message.value, typeof message.target === 'string' ? message.target : 'vehicle_paint1');
+      if (typeof message.value === 'string') modelPanel.setPaint(message.value, typeof message.target === 'string' ? message.target : 'primary');
       break;
     case 'preview-option':
       if (typeof message.target === 'string') modelPanel.setPreviewOption(message.target, message.value);

@@ -6,6 +6,7 @@
 
 export type Vec3 = [number, number, number];
 export type Quat = [number, number, number, number]; // x, y, z, w
+export type PaintSlot = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 export interface TexturePixels {
   width: number;
@@ -33,10 +34,25 @@ export interface ShaderTextureRef {
   texture: string;
 }
 
+/** One RAGE material parameter, retained for shader diagnostics. */
+export interface ShaderParameterData {
+  hash: number;
+  type: number;
+  /** Inline float data for non-texture parameters. */
+  values?: number[];
+}
+
 export interface ShaderData {
   name: string;
   file: string;
   renderBucket: number;
+  /** Raw RAGE material parameter hashes, retained for semantic material tags. */
+  parameterHashes?: number[];
+  parameters?: ShaderParameterData[];
+  /** Temporary parser diagnostic: raw grmShader header bytes. */
+  debugHeader?: number[];
+  /** Explicit original GTA material tag, when supplied by an asset manifest. */
+  paintSlot?: PaintSlot;
   textures: ShaderTextureRef[];
   /** Lower-cased name of the main colour texture, if any. */
   diffuse?: string;

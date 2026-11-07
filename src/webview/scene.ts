@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { DrawableData, LodLevel, ShaderData, TextureData } from '../shared/model';
+import type { DrawableData, LodLevel, PaintSlot, ShaderData, TextureData } from '../shared/model';
 import { LOD_LEVELS } from '../shared/model';
 import { decodeBc7 } from './bc7';
 import { isLiveryShader, splitLiveryName } from '../formats/livery';
@@ -30,20 +30,34 @@ export class TextureStore {
   private readonly listeners = new Set<() => void>();
   /** Decals baked over a base colour, keyed by texture name and colour. */
   private readonly baked = new Map<string, THREE.Texture>();
-  /** Colours of vehicle paint shaders, by lower-cased shader name. */
-  private readonly paint = new Map<string, number>();
+  /** Colours keyed exclusively by original GTA paint tags. */
+  private readonly paint = new Map<PaintSlot, number>();
+  /** Paint materials also need updates when they have no diffuse texture to register in `waiting`. */
+  private readonly paintMaterials = new Set<THREE.MeshStandardMaterial>();
   showTextures = true;
 
-  paintColour(shader: string): number {
-    return this.paint.get(shader.toLowerCase()) ?? DEFAULT_PAINT;
+  paintColour(slot: PaintSlot): number {
+    return this.paint.get(slot) ?? DEFAULT_PAINT;
   }
 
-  /** Sets the colour shown by every material of paint shader `shader` (e.g. vehicle_paint1). */
-  setPaint(shader: string, colour: number): void {
-    const name = shader.toLowerCase();
-    this.paint.set(name, colour);
+  registerPaintMaterial(material: THREE.MeshStandardMaterial): void {
+    this.paintMaterials.add(material);
+  }
+
+  /** Sets one numbered paint slot, applying it only to materials tagged with that exact slot. */
+  setPaint(slot: PaintSlot, colour: number): void {
+    this.paint.set(slot, colour);
     this.clearBaked();
-    for (const [key, mats] of this.waiting) mats.forEach((m) => m.userData.paintShader === name && this.apply(m, key));
+    for (const material of this.paintMaterials) {
+      const materialSlot = material.userData.paintSlot as number | undefined;
+      if (materialSlot !== slot) continue;
+      const key = material.userData.textureName as string | undefined;
+      if (key) this.apply(material, key);
+      else {
+        material.color.set(this.paintColour(slot));
+        material.needsUpdate = true;
+      }
+    }
   }
 
   /**
@@ -147,6 +161,9 @@ export class TextureStore {
 
   unbindAll(): void {
     this.waiting.clear();
+    // Paint materials are recreated with the drawable, so clear their references with
+    // the texture waiters when the active model changes.
+    this.paintMaterials.clear();
   }
 
   /** Re-applies texture visibility to every bound material. */
@@ -186,7 +203,8 @@ export class TextureStore {
   private apply(m: THREE.MeshStandardMaterial, key: string): void {
     const entry = this.textures.get(key);
     let tex = this.showTextures && entry?.tex ? entry.tex : null;
-    const paint = m.userData.paintShader ? this.paintColour(m.userData.paintShader as string) : undefined;
+    const slot = m.userData.paintSlot as PaintSlot | undefined;
+    const paint = slot === undefined ? undefined : this.paintColour(slot);
     const overlay = !!m.userData.overlay;
     if (tex && overlay) tex = this.bakeOver(key, tex, paint ?? (m.userData.fallbackColor as number));
     m.map = tex;
@@ -271,11 +289,15 @@ function createMaterial(shader: ShaderData | undefined, index: number, store: Te
     polygonOffsetFactor: blend === 'decal' ? -1 : 0,
     polygonOffsetUnits: blend === 'decal' ? -4 : 0,
   });
-  const paint = /^vehicle_paint/i.test(shader?.name ?? '');
+  const slot = shader?.paintSlot;
+  const paint = slot !== undefined;
   // Vehicle paint is a solid colour set at runtime (see TextureStore.setPaint).
   m.userData.fallbackColor = paint ? DEFAULT_PAINT : colorFor(shader?.diffuse ?? `shader${index}`);
   m.userData.shaderIndex = index;
-  if (paint) m.userData.paintShader = shader!.name.toLowerCase();
+  if (paint) {
+    m.userData.paintSlot = slot;
+    store.registerPaintMaterial(m);
+  }
   if (shader?.diffuseIsOverlay) m.userData.overlay = true;
   if (shader && isLiveryShader(shader) && shader.diffuse) {
     m.userData.liveryPrefix = splitLiveryName(shader.diffuse)?.prefix ?? shader.diffuse;
