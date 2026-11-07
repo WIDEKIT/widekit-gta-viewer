@@ -64,13 +64,13 @@ export function parseYft(file: Uint8Array, opts: DrawableOptions): DrawableData[
     // Vehicle wheels, doors and other physics pieces live outside the main
     // fragDrawable.  Attach them to the primary drawable so renderers can
     // compose the complete vehicle without treating them as collision data.
-    if (index === 0) d.fragmentChildren = readPhysicsChildren(r, opts);
-    return applyPaintManifest(d);
+    if (index === 0) d.fragmentChildren = readPhysicsChildren(r, opts, name);
+    return applyPaintManifest(d, name);
   });
 }
 
 /** Reads drawable-bearing fragment physics children (wheels on vehicles). */
-function readPhysicsChildren(r: ResourceReader, opts: DrawableOptions): FragmentChildData[] {
+function readPhysicsChildren(r: ResourceReader, opts: DrawableOptions, vehicleName: string): FragmentChildData[] {
   try {
     const physicsGroup = r.ptr(ROOT + 0xf0);
     if (!r.isValid(physicsGroup)) return [];
@@ -102,7 +102,7 @@ function readPhysicsChildren(r: ResourceReader, opts: DrawableOptions): Fragment
       let drawable: DrawableData | undefined;
       if (r.isValid(drawablePtr)) {
         try {
-          drawable = readDrawable(r, drawablePtr, opts, 'frag');
+          drawable = applyPaintManifest(readDrawable(r, drawablePtr, opts, 'frag'), vehicleName);
         } catch {
           // A child can be a non-renderable physics object.
         }

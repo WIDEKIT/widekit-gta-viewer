@@ -24,9 +24,16 @@ function summarizeDrawable(d: DrawableData) {
       return `${k}:${m.length}m/${meshes.length}g/${verts}v/${tris}t`;
     });
   console.log(`  drawable "${d.name}" bb=[${d.bbMin.map((v) => v.toFixed(2))}]..[${d.bbMax.map((v) => v.toFixed(2))}] ${lods.join(' ')}`);
-  console.log(`    shaders: ${d.shaders.map((s) => `${s.name}(${s.diffuse ?? '-'})${verbose && s.parameters?.length ? ` params=${s.parameters.map((p) => `0x${p.hash.toString(16)}:${p.type}${p.values ? `=[${p.values.map((v) => v.toFixed(3)).join(',')}]` : ''}`).join(',')}` : ''}`).join(', ')}`);
+  console.log(`    shaders: ${d.shaders.map((s) => `${s.name}(${s.diffuse ?? '-'})${s.paintSlot ? ` [PAINT:${s.paintSlot}]` : ''}${verbose && s.parameters?.length ? ` params=${s.parameters.map((p) => `0x${p.hash.toString(16)}:${p.type}${p.values ? `=[${p.values.map((v) => v.toFixed(3)).join(',')}]` : ''}`).join(',')}` : ''}`).join(', ')}`);
   console.log(`    embedded textures: ${d.textures.map((t) => `${t.name} ${t.width}x${t.height} ${t.format}${t.pixels ? '' : ' (no data)'}`).join(', ') || 'none'}; external refs: ${d.hasExternalTextures}`);
   if (d.bones.length) console.log(`    bones: ${d.bones.length} [${d.bones.slice(0, 6).map((b) => b.name).join(', ')}...]`);
+  if (d.fragmentChildren?.length) {
+    console.log(`    fragment children: ${d.fragmentChildren.length}`);
+    for (const [index, child] of d.fragmentChildren.entries()) {
+      if (!child.drawable) continue;
+      console.log(`      child ${index} bone=${child.boneTag} shaders: ${child.drawable.shaders.map((s) => `${s.name}(${s.diffuse ?? '-'})`).join(', ')}`);
+    }
+  }
   if (verbose) {
     for (const s of d.shaders) console.log(`      ${s.name} / ${s.file} bucket=${s.renderBucket} ${s.textures.map((t) => `${t.param}=${t.texture}`).join(' ')}`);
     const g = d.lods.high[0]?.meshes[0];

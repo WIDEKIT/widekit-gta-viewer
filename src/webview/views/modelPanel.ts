@@ -348,18 +348,15 @@ export class ModelPanel {
   setPaint(colour: string, target = 'primary'): void {
     if (!/^#[0-9a-f]{6}$/i.test(colour)) return;
     const value = new THREE.Color(colour).getHex();
+    const normalisedTarget = target.trim().toLowerCase();
+    // Explicit GTA tags take precedence over presentation labels. This keeps
+    // [PAINT:1] as the body slot and prevents an "accent" label recolouring it.
+    const tagged = normalisedTarget.match(/(?:\[\s*paint\s*:\s*|paint\s*:?\s*)([1-7])\s*\]?/i);
     const aliases: Record<string, number> = {
       primary: 1,
       secondary: 2,
-      paint3: 3,
-      'paint:3': 3,
-      interior: 4,
-      wheels: 5,
-      calipers: 6,
-      accent: 7,
     };
-    const tag = target.toLowerCase().match(/(?:paint\s*:?\s*|\[\s*paint\s*:\s*)([1-7])/i);
-    const slot = aliases[target.toLowerCase()] ?? (tag ? Number(tag[1]) : undefined);
+    const slot = tagged ? Number(tagged[1]) : aliases[normalisedTarget];
     if (!slot || slot < 1 || slot > 7) return;
     this.store.setPaint(slot as import('../../shared/model').PaintSlot, value);
     this.viewer.requestRender();
@@ -872,8 +869,20 @@ export class ModelPanel {
     const source = slots.get('lf')?.drawable ?? slots.get('rf')?.drawable
       ?? slots.get('lr')?.drawable ?? slots.get('rr')?.drawable;
     if (!source) return;
+    // Fragment wheel drawables in this YFT deliberately omit their material
+    // table. Their mesh index 0 is the authored wheel/rim material, so feeding
+    // the complete vehicle table made it resolve to `default` instead of the
+    // tagged PAINT:4 wheel shader.
+    const wheelShader = vehicle.shaders.find((shader) =>
+      shader.paintSlot === 4 && shader.name.toLowerCase() === 'vehicle_tire'
+    ) ?? vehicle.shaders.find((shader) => shader.paintSlot === 4);
     const drawable = source.shaders.length === 0
-      ? { ...source, shaders: vehicle.shaders, textures: vehicle.textures, hasExternalTextures: vehicle.hasExternalTextures }
+      ? {
+          ...source,
+          shaders: wheelShader ? [wheelShader] : vehicle.shaders,
+          textures: vehicle.textures,
+          hasExternalTextures: vehicle.hasExternalTextures,
+        }
       : source;
     const template = buildDrawable(drawable, availableLod(drawable, 'high'), this.store, this.opts);
     template.traverse((node) => {
